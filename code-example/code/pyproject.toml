@@ -1,0 +1,26 @@
+[project]
+name = "fastapi-scaffold"
+version = "1.0.0"
+description = "Talentsview SDK FastAPI 生产就绪脚手架"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.2.1",
+    "rich>=14.2.0",
+    "structlog>=25.5.0",
+    "talentsview>=1.2.2",
+    "langfuse>=3.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]

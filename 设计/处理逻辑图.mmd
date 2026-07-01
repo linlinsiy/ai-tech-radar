@@ -1,0 +1,25 @@
+flowchart TB
+    START["任务调度触发<br/>定时任务 / 手动补跑"] --> LOAD["读取数据源配置<br/>访问域名、采集频率、启用状态"]
+    LOAD --> FETCH["采集外部公开资讯<br/>RSS / API / 网页"]
+    FETCH --> FAIL{"采集是否成功"}
+    FAIL -->|"是"| PARSE["解析文章内容<br/>标题、链接、发布时间、摘要或正文"]
+    PARSE --> DEDUP["去重与有效性检查<br/>URL、标题、内容指纹、抓取状态"]
+    DEDUP --> BASIC["基础分析<br/>摘要、分类、关键信息抽取"]
+    BASIC --> DEEP_CHECK{"是否需要深度分析"}
+    DEEP_CHECK -->|"是"| DEEP["深度分析<br/>技术背景、实现思路、影响与参考价值"]
+    DEEP_CHECK -->|"否"| STRUCT
+    DEEP --> STRUCT["生成结构化结果<br/>文章记录、分析结果、报告草稿、任务元数据"]
+    STRUCT --> IMPORT["调用内部受控导入接口"]
+    IMPORT --> STORE["写入内部数据库 / 内部知识库"]
+    STORE --> RAG["内部检索与 RAG 问答"]
+    STORE --> REPORT["技术简报草稿复用"]
+    FAIL -->|"否"| LOG["记录失败原因<br/>用于重试、替换数据源或排障"]
+
+    classDef step fill:#FFFFFF,stroke:#4B5563,color:#1F2933;
+    classDef decision fill:#FFF7E6,stroke:#B7791F,color:#1F2933;
+    classDef output fill:#ECF7EE,stroke:#3A7C4F,color:#1F2933;
+    classDef warn fill:#FFF1F0,stroke:#C2410C,color:#7C2D12;
+    class START,LOAD,FETCH,PARSE,DEDUP,BASIC,DEEP,STRUCT,IMPORT step;
+    class DEEP_CHECK,FAIL decision;
+    class STORE,RAG,REPORT output;
+    class LOG warn;

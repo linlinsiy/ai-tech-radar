@@ -1,0 +1,44 @@
+﻿# Secrets - passwords, keys, tokens
+tech-research/aws/secrets/.env
+tech-research/internal/secrets/.env
+code-example/code/.env.prd
+code-example/code/.env.uat
+cookies.txt
+login_resp.json
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+venv/
+.venv/
+
+# Logs & runtime output
+*.log
+*.txt
+tech-research/aws/logs/
+tech-research/internal/logs/
+tech-research/aws/stdout.txt
+tech-research/aws/stderr.txt
+tech-research/internal/stdout.txt
+tech-research/internal/stderr.txt
+tech-research/internal/stdout2.txt
+tech-research/internal/stderr2.txt
+tech-research/internal/stdout3.txt
+tech-research/internal/stderr3.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Tool artifacts
+.iflycode/
+.playwright-cli/
+
+# OS
+.DS_Store
+Thumbs.db

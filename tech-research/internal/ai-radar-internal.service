@@ -1,0 +1,23 @@
+﻿# ============================================================
+# AI技术趋势雷达 - 内部侧 systemd 服务配置
+# 路径: /etc/systemd/system/ai-radar-internal.service
+# ============================================================
+
+[Unit]
+Description=AI技术趋势雷达 - 内部应用节点服务
+After=network.target
+
+[Service]
+Type=simple
+User=airadar
+Group=airadar
+WorkingDirectory=/opt/ai-radar-internal
+EnvironmentFile=/opt/ai-radar-internal/secrets/.env
+ExecStart=/usr/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=15
+StandardOutput=append:/opt/ai-radar-internal/logs/service.log
+StandardError=append:/opt/ai-radar-internal/logs/service.log
+
+[Install]
+WantedBy=multi-user.target

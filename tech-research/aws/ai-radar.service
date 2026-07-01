@@ -1,0 +1,37 @@
+﻿# ============================================================
+# AI技术趋势雷达 - AWS 侧 systemd 服务配置
+# 路径: /etc/systemd/system/ai-radar.service
+# ============================================================
+# 部署步骤:
+#   sudo cp ai-radar.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable ai-radar.service
+#   sudo systemctl start ai-radar.service
+# ============================================================
+
+[Unit]
+Description=AI技术趋势雷达 - AWS 侧采集分析服务
+After=network.target
+
+[Service]
+Type=simple
+User=airadar
+Group=airadar
+WorkingDirectory=/opt/ai-radar
+EnvironmentFile=/opt/ai-radar/secrets/.env
+ExecStart=/usr/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=15
+StandardOutput=append:/opt/ai-radar/logs/service.log
+StandardError=append:/opt/ai-radar/logs/service.log
+
+# 安全加固
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/ai-radar/data /opt/ai-radar/logs
+ReadOnlyPaths=/opt/ai-radar/config /opt/ai-radar/secrets
+
+[Install]
+WantedBy=multi-user.target

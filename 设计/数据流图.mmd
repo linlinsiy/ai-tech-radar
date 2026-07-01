@@ -1,0 +1,35 @@
+flowchart LR
+    subgraph OUT["境外 / 外部侧"]
+        SRC["外部公开资讯源"]
+        AWS["亚马逊云采集分析服务"]
+        ELLM["外部大模型"]
+    end
+
+    subgraph IN["公司内部侧"]
+        IMPORT["受控导入接口"]
+        DB["业务数据库"]
+        KB["内部知识库"]
+        ILLM["内部大模型"]
+        USER["内部用户 / 技术团队"]
+    end
+
+    SRC -->|"进入亚马逊云侧：公开标题、链接、发布时间、摘要或正文"| AWS
+    AWS -->|"调用外部大模型：公开文章内容、分析提示词"| ELLM
+    ELLM -->|"返回到亚马逊云侧：摘要、分类、分析结果、报告草稿"| AWS
+    AWS -->|"回传公司内部：结构化成果、来源链接、任务元数据"| IMPORT
+    IMPORT --> DB
+    IMPORT --> KB
+    USER -->|"内部问题 / 检索请求"| KB
+    KB -->|"召回内部知识内容"| ILLM
+    ILLM -->|"带来源引用的回答"| USER
+
+    BLOCK["安全边界<br/>公司业务数据、员工问题、内部知识库内容不得发送到亚马逊云侧或外部大模型"]
+    BLOCK -.-> AWS
+    BLOCK -.-> ELLM
+
+    classDef external fill:#EEF6FF,stroke:#2F6FAB,color:#1F2933;
+    classDef internal fill:#ECF7EE,stroke:#3A7C4F,color:#1F2933;
+    classDef warn fill:#FFF1F0,stroke:#C2410C,color:#7C2D12;
+    class SRC,AWS,ELLM external;
+    class IMPORT,DB,KB,ILLM,USER internal;
+    class BLOCK warn;

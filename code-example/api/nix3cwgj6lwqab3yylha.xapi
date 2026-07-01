@@ -1,0 +1,60 @@
+{
+	"service_name":"nix3cwgj6lwqab3yylha",
+	"provider":"xapi-q6fb7d76",
+	"service_protocol":"dubbo",
+	"service_mode":"0",
+	"service_route":"/gdmzntfbkj/agent/nix3cwgj6lwqab3yylha",
+	"listen":{
+		"service_diy":"diy"
+	},
+	"service_type":"diy",
+	"entry_file":"",
+	"dependencies":[
+		"code/"
+	],
+	"model_file":[
+		
+	],
+	"command_prd":"echo export TALENTSVIEW_ENV=PRD >> ~/.bashrc ;echo export TALENTSVIEW_APP_ID=001804 >> ~/.bashrc ;echo export TALENTSVIEW_AGENT_ID_ENCRYPTED=true >> ~/.bashrc ;echo export TALENTSVIEW_AGENT_ID=ASOOHUemybkD1lbBcTckxeg8todQs/kUUP5UHzj82KnM7peCcuv839yLzlvJ8goKrg== >> ~/.bashrc ;echo export TALENTSVIEW_WORKSPACE_ID=d8nr4bonpittoubn3dig >> ~/.bashrc ;echo export LANGFUSE_SECRET_KEY=sk-lf-6459310a-8631-47cb-a753-11e8c8ae98c0 >> ~/.bashrc ;echo export LANGFUSE_PUBLIC_KEY=pk-lf-d4f1ea58-6cf5-474b-8d14-0b1ffb3f3856 >> ~/.bashrc ;echo export UV_DEFAULT_INDEX=http://repo.htzq.htsc.com.cn/repository/htscpypi/simple/ >> ~/.bashrc ;echo export UV_CACHE_DIR=/opt/uv-cache >> ~/.bashrc ;echo export UV_PROJECT_ENVIRONMENT=/opt/venv >> ~/.bashrc ;echo export PYTHONPYCACHEPREFIX=/opt/pycache >> ~/.bashrc ;echo export PATH=/opt/venv/bin:$PATH >> ~/.bashrc ;echo export LOG_FILE_PATH=/opt/logs/app.log >> ~/.bashrc ;mkdir -p /opt/venv /opt/uv-cache /opt/pycache /opt/logs; source ~/.bashrc; cd /app/mount/code; uv sync ;uv run python main.py",
+	"command_dev":"echo export TALENTSVIEW_ENV=UAT >> ~/.bashrc ;echo export TALENTSVIEW_APP_ID=001748 >> ~/.bashrc ;echo export TALENTSVIEW_AGENT_ID_ENCRYPTED=true >> ~/.bashrc ;echo export TALENTSVIEW_AGENT_ID=AXsEVFHLcIFdPN29OalAYWghfWrV6+9Pbq0qA24Lp8Sr16FA6fG3VZxFeL5L2XzU/g== >> ~/.bashrc ;echo export TALENTSVIEW_WORKSPACE_ID=d3oqqd355taacla9msu0 >> ~/.bashrc ;echo export LANGFUSE_SECRET_KEY=sk-lf-f4d338d7-6265-412b-bb14-72872497df7a >> ~/.bashrc ;echo export LANGFUSE_PUBLIC_KEY=pk-lf-7b7a49a1-b4b0-4e93-b375-b3dad765a3ff >> ~/.bashrc ;echo export UV_DEFAULT_INDEX=http://repo.htzq.htsc.com.cn/repository/htscpypi/simple/ >> ~/.bashrc ;echo export UV_CACHE_DIR=/opt/uv-cache >> ~/.bashrc ;echo export UV_PROJECT_ENVIRONMENT=/opt/venv >> ~/.bashrc ;echo export PYTHONPYCACHEPREFIX=/opt/pycache >> ~/.bashrc ;echo export PATH=/opt/venv/bin:$PATH >> ~/.bashrc ;echo export LOG_FILE_PATH=/opt/logs/app.log >> ~/.bashrc ;mkdir -p /opt/venv /opt/uv-cache /opt/pycache /opt/logs; source ~/.bashrc; cd /app/mount/code; uv sync ;uv run python main.py",
+	"env_vars":{
+		
+	},
+	"instance":1,
+	"thread_no":500,
+	"base_image":"repo-dev.htsc/htds-docker-daily-local/001614/htds/codeagent_py3.12:v1.0.0",
+	"image_type":"1",
+	"resources":{
+		"CPU":1,
+		"Memory":2048
+	},
+	"model_config":[
+		{
+			"method_id":"diy",
+			"entry_file":"",
+			"dependencies":[
+				"code/"
+			],
+			"max_exec_time":10
+		}
+	],
+	"alias_cn":"AI技术趋势雷达",
+	"use_shared_memory":false,
+	"no_init_cmd":true,
+	"http_timeout":300,
+	"unit":"",
+	"call_method":"rest",
+	"nasPathArray":[
+		
+	],
+	"nodeports":[
+		"8000"
+	],
+	"dubbo_interface":"Xapiq6fb7d76",
+	"enable_mcp":false,
+	"mcp_service_summary":"",
+	"mcp_service_description":"",
+	"mcp_service_tags":[
+		
+	]
+}

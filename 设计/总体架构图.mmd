@@ -1,0 +1,39 @@
+flowchart LR
+    subgraph EXT["外部公网资源"]
+        SITES["外部公开资讯源<br/>技术网站 / RSS / API / 公众号公开内容"]
+        ELLM["外部大模型服务<br/>仅处理公开文章内容"]
+    end
+
+    subgraph AWS["亚马逊云侧：外部公开资讯处理区"]
+        direction TB
+        AWSNODE["亚马逊云采集分析节点<br/>采集 / 解析 / 去重 / 外部模型编排 / 结构化结果生成"]
+        AWSLOG["运行日志与任务状态<br/>采集批次、失败原因、模型调用记录"]
+        AWSNODE --> AWSLOG
+    end
+
+    subgraph IN["公司内部：知识库使用区"]
+        direction TB
+        SCH["公司任务调度平台<br/>任务触发 / 状态回传"]
+        INNODE["内部应用节点<br/>受控导入接口 / 数据写入 / 内部检索入口"]
+        DB["业务数据库<br/>采集记录 / 分析结果 / 任务状态"]
+        KB["内部知识库<br/>公开资讯加工成果沉淀"]
+        ILLM["内部大模型服务<br/>内部检索场景使用"]
+
+        SCH -->|"触发任务 / 获取状态"| AWSNODE
+        INNODE -->|"写入结构化数据"| DB
+        INNODE -->|"沉淀知识内容"| KB
+        INNODE -->|"内部检索调用"| ILLM
+        ILLM -->|"基于内部知识库回答"| INNODE
+    end
+
+    SITES -->|"公开网页 / RSS / API<br/>按白名单访问"| AWSNODE
+    AWSNODE -->|"公开文章内容 + 分析提示词"| ELLM
+    ELLM -->|"摘要 / 分类 / 分析结果"| AWSNODE
+    AWSNODE -->|"结构化成果<br/>企业受控导入链路"| INNODE
+
+    classDef external fill:#EEF6FF,stroke:#2F6FAB,color:#1F2933;
+    classDef aws fill:#FFF7E6,stroke:#B7791F,color:#1F2933;
+    classDef internal fill:#ECF7EE,stroke:#3A7C4F,color:#1F2933;
+    class SITES,ELLM external;
+    class AWSNODE,AWSLOG aws;
+    class SCH,INNODE,DB,KB,ILLM internal;

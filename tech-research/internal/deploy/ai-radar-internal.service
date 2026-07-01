@@ -1,0 +1,18 @@
+[Unit]
+Description=AI技术趋势雷达 - 内部应用节点
+After=network.target mysql.service
+Wants=network.target mysql.service
+
+[Service]
+Type=simple
+User=appadmin
+Group=appadmin
+WorkingDirectory=/app/001804/internal
+Environment=PYTHONPATH=/app/001804/internal/app:/app/001804/internal
+ExecStart=/app/001804/internal/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 9001 --log-level info
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=AI技术趋势雷达 - AWS侧服务
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=appadmin
+Group=appadmin
+WorkingDirectory=/app/001804/aws
+Environment=PYTHONPATH=/app/001804/aws/app:/app/001804/aws
+ExecStart=/app/001804/aws/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 9003 --log-level info
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
