@@ -1,14 +1,13 @@
 #!/bin/bash
 # ============================================================
-# AI技术趋势雷达 - RSS Feed 连通性检查脚本
 # 用法: bash check_feeds.sh
 # ============================================================
 
-# 前置检查
-if ! command -v curl &>/dev/null; then
-  echo "❌ curl 未安装，请先执行: apt install -y curl (或 yum install -y curl)"
-  exit 1
-fi
+echo "========================================"
+echo "  AI Radar - Feed Connectivity Check"
+echo "  $(date '+%Y-%m-%d %H:%M:%S')"
+echo "========================================"
+echo ""
 
 urls=(
   "http://export.arxiv.org/rss/cs.AI"
@@ -28,17 +27,11 @@ urls=(
   "https://blog.langchain.dev/rss/"
 )
 
-echo "========================================"
-echo "  AI Radar - Feed Connectivity Check"
-echo "  $(date '+%Y-%m-%d %H:%M:%S')"
-echo "========================================"
-echo ""
-
 ok=0
 fail=0
 
 for url in "${urls[@]}"; do
-  code=$(curl -sL -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 15 "$url" 2>/dev/null) || code="000"
+  code=$(curl -sL -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 15 "$url")
   if [ "$code" = "200" ]; then
     echo "✅  $code  $url"
     ok=$((ok + 1))
@@ -50,5 +43,5 @@ done
 
 echo ""
 echo "========================================"
-echo "  Result: $ok OK, $fail FAIL"
+echo "  通过: $ok / 失败: $fail"
 echo "========================================"
