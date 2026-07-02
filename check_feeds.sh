@@ -4,7 +4,11 @@
 # 用法: bash check_feeds.sh
 # ============================================================
 
-set -e
+# 前置检查
+if ! command -v curl &>/dev/null; then
+  echo "❌ curl 未安装，请先执行: apt install -y curl (或 yum install -y curl)"
+  exit 1
+fi
 
 urls=(
   "http://export.arxiv.org/rss/cs.AI"
@@ -34,13 +38,13 @@ ok=0
 fail=0
 
 for url in "${urls[@]}"; do
-  code=$(curl -sL -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 15 "$url")
+  code=$(curl -sL -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 15 "$url" 2>/dev/null) || code="000"
   if [ "$code" = "200" ]; then
     echo "✅  $code  $url"
-    ((ok++))
+    ok=$((ok + 1))
   else
     echo "❌  $code  $url"
-    ((fail++))
+    fail=$((fail + 1))
   fi
 done
 
