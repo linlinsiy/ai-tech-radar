@@ -59,6 +59,31 @@ def create_app(config: AWSConfig):
     app.post("/api/v1/jobs/health-check", response_model=None)(trigger_health_check)
     logger.info("手动触发接口已注册: POST /api/v1/jobs/collect, POST /api/v1/jobs/health-check")
 
+    @app.on_event("startup")
+    async def startup_scheduler():
+        """按配置启动调度接入。"""
+        scheduler_mode = config.scheduler_config["mode"]
+        logger.info("调度模式: %s", scheduler_mode)
+
+        if scheduler_mode == "xxljob":
+            if getattr(app.state, "xxl_started", False):
+                return
+            from jobs.xxl_executor import start_xxl_executor
+            import threading
+            xxl_thread = threading.Thread(
+                target=start_xxl_executor,
+                args=(config,),
+                daemon=True,
+                name="xxl-executor"
+            )
+            xxl_thread.start()
+            app.state.xxl_started = True
+            logger.info("XXL-Job Executor 已启动（后台线程）")
+        elif scheduler_mode == "crontab":
+            logger.info("本地 crontab 调度模式，不注册 XXL-Job Executor")
+        else:
+            logger.info("调度模式为 none，不注册调度器")
+
     return app
 
 
@@ -81,18 +106,6 @@ def main():
         import uvicorn
         server_port = int(os.environ.get("AI_RADAR_PORT", "9003"))
         logger.info("服务启动，监听端口 %d", server_port)
-
-        # 启动 XXL-Job Executor（在后台线程中监听调度任务）
-        from jobs.xxl_executor import start_xxl_executor
-        import threading
-        xxl_thread = threading.Thread(
-            target=start_xxl_executor,
-            args=(config,),
-            daemon=True,
-            name="xxl-executor"
-        )
-        xxl_thread.start()
-        logger.info("XXL-Job Executor 已启动（后台线程）")
 
         uvicorn.run(app, host="0.0.0.0", port=server_port, log_level="info")
 

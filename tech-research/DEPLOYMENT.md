@@ -15,6 +15,7 @@
 - Python 3.11+
 - MySQL 8.0+（仅内部节点需要）
 - XXL-Job 调度平台（可选）
+- crontab（可选，用于不接入 XXL-Job 时按本机周期调度任务）
 
 ## 部署方式（appadmin 用户）
 
@@ -125,6 +126,59 @@ sudo systemctl daemon-reload
 sudo systemctl enable ai-radar-internal
 sudo systemctl start ai-radar-internal
 ```
+
+### 八、调度模式配置
+
+服务部署和启动方式保持不变。调度方式通过 `config/config.properties` 中的 `scheduler.mode` 控制：
+
+| 值 | 说明 |
+|---|---|
+| `xxljob` | 启动服务时注册 XXL-Job Executor，由 XXL-Job 触发任务 |
+| `crontab` | 不注册 XXL-Job Executor，由本机 crontab 通过 HTTP 接口触发任务 |
+| `none` | 不启用调度器，仅保留 HTTP 手动触发能力 |
+
+#### AWS 侧配置
+
+配置文件：`/app/001804/aws/config/config.properties`
+
+```properties
+scheduler.mode=xxljob
+scheduler.cron.collect=0 8 * * *
+scheduler.cron.health_check=*/30 * * * *
+```
+
+当 `scheduler.mode=crontab` 时，服务仍按原方式启动，只是不注册 XXL-Job。运维人员按配置中的 cron 表达式手动维护系统 crontab，触发已有 HTTP 接口：
+
+```cron
+# 每天 08:00 执行采集分析
+0 8 * * * curl -fsS -X POST http://127.0.0.1:9003/api/v1/jobs/collect -H 'Content-Type: application/json' -d '{"scope":"all","task_type":"scheduled"}' >> /app/001804/aws/logs/cron.log 2>&1
+
+# 每 30 分钟执行数据源健康检查
+*/30 * * * * curl -fsS -X POST http://127.0.0.1:9003/api/v1/jobs/health-check >> /app/001804/aws/logs/cron.log 2>&1
+```
+
+#### 内部侧配置
+
+配置文件：`/app/001804/internal/config/config.properties`
+
+```properties
+scheduler.mode=xxljob
+scheduler.cron.briefing=0 9 * * 1
+scheduler.briefing_type=weekly
+```
+
+当 `scheduler.mode=crontab` 时，服务仍按原方式启动，只是不注册 XXL-Job。运维人员按配置中的 cron 表达式手动维护系统 crontab，触发已有 HTTP 接口：
+
+```cron
+# 每周一 09:00 生成周报草稿
+0 9 * * 1 curl -fsS -X POST http://127.0.0.1:9001/api/v1/jobs/briefing -H 'Content-Type: application/json' -d '{"briefing_type":"weekly"}' >> /app/001804/internal/logs/cron.log 2>&1
+```
+
+说明：
+
+1. `deploy/crontab.example` 仅作为 crontab 配置参考，不参与部署流程。
+2. 本地 crontab 通过 HTTP 接口触发任务，不新增独立 CLI 入口。
+3. crontab 日志建议追加到 `logs/cron.log`，业务日志仍写入服务自身日志。
 
 ## 配置说明
 

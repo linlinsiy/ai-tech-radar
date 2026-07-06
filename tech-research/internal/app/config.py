@@ -21,6 +21,13 @@ class InternalConfig:
     _instance = None
 
     def __init__(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self._config_dir = os.environ.get(
+            "AI_RADAR_INTERNAL_CONFIG_DIR",
+            os.path.join(base, "config"),
+        )
+        self._config = ConfigParser()
+        self._load_config()
         self._load_env()
 
     @classmethod
@@ -28,6 +35,16 @@ class InternalConfig:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
+
+    def _load_config(self):
+        """加载 config/config.properties"""
+        props_path = os.path.join(self._config_dir, "config.properties")
+        if os.path.exists(props_path):
+            self._config.read(props_path, encoding="utf-8")
+
+    def get(self, section: str = "DEFAULT", option: str = "", fallback: str = "") -> str:
+        """读取配置文件中的单个配置项"""
+        return self._config.get(section, option, fallback=fallback)
 
     def _load_env(self):
         """加载 secrets/.env 环境变量"""
@@ -121,6 +138,25 @@ class InternalConfig:
         }
 
     # === XXL-Job 调度平台配置 ===
+
+    @property
+    def scheduler_config(self) -> Dict[str, str]:
+        """
+        调度模式配置
+
+        mode:
+            xxljob  - 启动时注册 XXL-Job Executor
+            crontab - 不注册 XXL-Job，由本机 crontab 调 HTTP 接口
+            none    - 不启用调度器
+        """
+        mode = self.get(option="scheduler.mode", fallback="xxljob").strip().lower()
+        if mode not in ("xxljob", "crontab", "none"):
+            mode = "xxljob"
+        return {
+            "mode": mode,
+            "cron_briefing": self.get(option="scheduler.cron.briefing", fallback="0 9 * * 1"),
+            "briefing_type": self.get(option="scheduler.briefing_type", fallback="weekly"),
+        }
 
     @property
     def xxl_config(self) -> Dict[str, str]:

@@ -1,0 +1,18 @@
+# AI Radar AWS cron examples.
+# Use only when config/config.properties sets:
+#   scheduler.mode=crontab
+#
+# Keep these cron expressions consistent with:
+#   scheduler.cron.collect
+#   scheduler.cron.health_check
+#
+# This file is a reference template. Edit the current user's crontab manually:
+#   crontab -e
+
+SHELL=/bin/bash
+
+# Collect external articles, run L2/L3 analysis, and import results.
+0 8 * * * curl -fsS -X POST http://127.0.0.1:9003/api/v1/jobs/collect -H 'Content-Type: application/json' -d '{"scope":"all","task_type":"scheduled"}' >> /app/001804/aws/logs/cron.log 2>&1
+
+# Check data source reachability.
+*/30 * * * * curl -fsS -X POST http://127.0.0.1:9003/api/v1/jobs/health-check >> /app/001804/aws/logs/cron.log 2>&1

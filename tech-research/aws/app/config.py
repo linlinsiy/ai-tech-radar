@@ -148,6 +148,18 @@ class AWSConfig:
     # === 导入接口配置 ===
 
     @property
+    def scheduler_config(self) -> Dict[str, str]:
+        """调度模式配置"""
+        mode = self.get(option="scheduler.mode", fallback="xxljob").strip().lower()
+        if mode not in ("xxljob", "crontab", "none"):
+            mode = "xxljob"
+        return {
+            "mode": mode,
+            "cron_collect": self.get(option="scheduler.cron.collect", fallback="0 8 * * *"),
+            "cron_health_check": self.get(option="scheduler.cron.health_check", fallback="*/30 * * * *"),
+        }
+
+    @property
     def import_endpoint_url(self) -> str:
         """内部受控导入接口地址"""
         return self.get(option="import_endpoint.url")

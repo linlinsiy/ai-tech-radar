@@ -56,16 +56,24 @@ async def startup():
     except Exception as e:
         logging.warning("MySQL 连接验证失败（服务仍可启动）: %s", str(e))
 
-    # 启动 XXL-Job Executor（后台线程，注册 aiRadarBriefingJob）
-    try:
-        from jobs.xxl_executor import start_xxl_executor
-        xxl_thread = threading.Thread(
-            target=start_xxl_executor, daemon=True, name="xxl-executor"
-        )
-        xxl_thread.start()
-        logging.info("XXL-Job Executor 后台线程已启动")
-    except Exception as e:
-        logging.warning("XXL-Job Executor 启动失败: %s", e)
+    scheduler_mode = config.scheduler_config["mode"]
+    logging.info("调度模式: %s", scheduler_mode)
+
+    if scheduler_mode == "xxljob":
+        # 启动 XXL-Job Executor（后台线程，注册 aiRadarBriefingJob）
+        try:
+            from jobs.xxl_executor import start_xxl_executor
+            xxl_thread = threading.Thread(
+                target=start_xxl_executor, daemon=True, name="xxl-executor"
+            )
+            xxl_thread.start()
+            logging.info("XXL-Job Executor 后台线程已启动")
+        except Exception as e:
+            logging.warning("XXL-Job Executor 启动失败: %s", e)
+    elif scheduler_mode == "crontab":
+        logging.info("本地 crontab 调度模式，不注册 XXL-Job Executor")
+    else:
+        logging.info("调度模式为 none，不注册调度器")
 
     logging.info("内部应用节点就绪，监听端口 %s", config.server_config["port"])
 
@@ -85,6 +93,9 @@ app.include_router(task_router)
 
 from api.qa_api import router as qa_router
 app.include_router(qa_router)
+
+from api.jobs_api import router as jobs_router
+app.include_router(jobs_router)
 
 
 # 健康检查保留在 main 中（不依赖 EIPLite 状态）

@@ -1,0 +1,18 @@
+# AI Radar internal cron examples.
+# Use only when config/config.properties sets:
+#   scheduler.mode=crontab
+#
+# Keep this cron expression and briefing type consistent with:
+#   scheduler.cron.briefing
+#   scheduler.briefing_type
+#
+# This file is a reference template. Edit the current user's crontab manually:
+#   crontab -e
+
+SHELL=/bin/bash
+
+# Generate weekly briefing draft.
+0 9 * * 1 curl -fsS -X POST http://127.0.0.1:9001/api/v1/jobs/briefing -H 'Content-Type: application/json' -d '{"briefing_type":"weekly"}' >> /app/001804/internal/logs/cron.log 2>&1
+
+# Generate monthly briefing draft. Enable if needed.
+# 0 9 1 * * curl -fsS -X POST http://127.0.0.1:9001/api/v1/jobs/briefing -H 'Content-Type: application/json' -d '{"briefing_type":"monthly"}' >> /app/001804/internal/logs/cron.log 2>&1
