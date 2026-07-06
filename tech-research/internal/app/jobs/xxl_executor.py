@@ -77,6 +77,11 @@ def start_xxl_executor():
         uvloop.Loop.add_signal_handler = lambda self, sig, cb=None, *a, **kw: None
     except Exception:
         pass
+    try:
+        import asyncio.unix_events
+        asyncio.unix_events._UnixSelectorEventLoop.add_signal_handler = lambda self, sig, cb=None, *a, **kw: None
+    except (AttributeError, ImportError):
+        pass
     asyncio.AbstractEventLoop.add_signal_handler = lambda self, sig, cb=None, *a, **kw: None
 
     runner.run_executor()

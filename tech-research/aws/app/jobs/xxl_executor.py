@@ -102,11 +102,19 @@ def start_xxl_executor(config):
     # asyncio.new_event_loop(), so instance-level patch won't work on Linux.
     # We must patch at the class level before any loop is created.
     import asyncio
+    # Python 3.12+: _UnixSelectorEventLoop has its own override;
+    # patching AbstractEventLoop alone is not enough.
     try:
         import uvloop
         uvloop.Loop.add_signal_handler = lambda self, sig, cb=None, *a, **kw: None
     except Exception:
         pass
+    try:
+        import asyncio.unix_events
+        asyncio.unix_events._UnixSelectorEventLoop.add_signal_handler = lambda self, sig, cb=None, *a, **kw: None
+    except (AttributeError, ImportError):
+        pass
+    # fallback for any other event loop implementations
     asyncio.AbstractEventLoop.add_signal_handler = lambda self, sig, cb=None, *a, **kw: None
 
     runner.run_executor()
