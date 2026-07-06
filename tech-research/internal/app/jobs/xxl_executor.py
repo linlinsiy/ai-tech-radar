@@ -19,6 +19,31 @@ from config import InternalConfig
 logger = logging.getLogger("xxl_job")
 
 
+def disable_aiohttp_signal_handlers():
+    """
+    pyxxl uses aiohttp.web.run_app() internally.
+
+    aiohttp registers signal handlers by default, but signal handlers can only
+    be installed from the main thread. The XXL executor is started in a
+    background thread beside FastAPI, so force aiohttp to skip signal handling.
+    """
+    try:
+        from aiohttp import web
+        original_run_app = web.run_app
+        if getattr(original_run_app, "_ai_radar_no_signals", False):
+            return
+
+        def run_app_without_signals(*args, **kwargs):
+            kwargs["handle_signals"] = False
+            return original_run_app(*args, **kwargs)
+
+        run_app_without_signals._ai_radar_no_signals = True
+        web.run_app = run_app_without_signals
+        logger.info("aiohttp.web.run_app patched: handle_signals=False")
+    except Exception as e:
+        logger.warning("aiohttp signal handler patch failed: %s", e)
+
+
 def create_xxl_runner() -> PyxxlRunner:
     """
     ????????XXL-Job Executor Runner
@@ -65,6 +90,8 @@ def start_xxl_executor():
     """
     runner = create_xxl_runner()
     register_handlers(runner)
+    disable_aiohttp_signal_handlers()
+
     logger.info("内部侧 XXL-Job Executor 启动中... app=%s",
                 InternalConfig.get_instance().xxl_config["app_name"])
     # Patch: Linux signal handler can only be registered from main thread;
