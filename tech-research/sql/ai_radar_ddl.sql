@@ -188,15 +188,29 @@ ALTER TABLE ai_radar_briefing_draft ADD COLUMN content TEXT COMMENT '简报正�
 -- 初始化数据：12 个首期数据源
 -- ============================================================
 INSERT INTO ai_radar_source (source_code, source_name, source_type, access_url, domain, enabled) VALUES
-('xin-zhi-yuan',     '新智元',              'tech_media',       'https://wechat2rss.bestblogs.dev/feed/e531a18b21c34cf787b83ab444eef659d7a980de.xml','wechat2rss.bestblogs.dev',1),
-('saibochangxin',    '赛博禅心',             'tech_media',       'https://wechat2rss.bestblogs.dev/feed/752c31ca0446b837339463fc5440539e20267d2f.xml','wechat2rss.bestblogs.dev',1),
-('zhidx',            '智东西',              'tech_media',       'https://wechat2rss.bestblogs.dev/feed/cfd52b4245ca6119b2fda4ef934832c689028927.xml','wechat2rss.bestblogs.dev',1),
-('jiqizhixin',       '机器之心',             'tech_media',       'https://wechat2rss.bestblogs.dev/feed/8d97af31b0de9e48da74558af128a4673d78c9a3.xml','wechat2rss.bestblogs.dev',1),
-('liangziwei',       '量子位',              'tech_media',       'https://www.qbitai.com/feed','www.qbitai.com',        1),
-('tencent-research', '腾讯研究院',            'research_institute','https://wechat2rss.bestblogs.dev/feed/6152301e0978bffb0a8284cab339262b9764dcfb.xml','wechat2rss.bestblogs.dev',1),
-('aws-ml-blog',      'AWS ML Blog',      'vendor_blog',      'https://aws.amazon.com/blogs/machine-learning/feed/','aws.amazon.com',        1),
-('netflix-techblog', 'Netflix TechBlog', 'vendor_blog',      'https://netflixtechblog.com/feed','netflixtechblog.com',   1),
-('infoq-ai-ml',      'InfoQ AI/ML',      'tech_media',       'https://feed.infoq.com/ai-ml-data-eng/news','feed.infoq.com',        1),
-('hackernews',       'Hacker News',      'tech_community',   'https://hnrss.org/frontpage?description=full&q=AI+OR+LLM','hnrss.org',             1),
-('huggingface',      'HuggingFace Blog', 'vendor_blog',      'https://huggingface.co/blog/feed.xml','huggingface.co',        1),
-('arxiv-cs-ai',      'arXiv cs.AI',      'academic',         'http://export.arxiv.org/rss/cs.AI','export.arxiv.org',      1);
+-- === 原有 12 个 ===
+('xin-zhi-yuan', '新智元', 'tech_media', 'https://wechat2rss.bestblogs.dev/feed/e531a18b21c34cf787b83ab444eef659d7a980de.xml', 'wechat2rss.bestblogs.dev', 1),
+('saibochangxin', '赛博禅心', 'tech_media', 'https://wechat2rss.bestblogs.dev/feed/752c31ca0446b837339463fc5440539e20267d2f.xml', 'wechat2rss.bestblogs.dev', 1),
+('zhidx', '智东西', 'tech_media', 'https://wechat2rss.bestblogs.dev/feed/cfd52b4245ca6119b2fda4ef934832c689028927.xml', 'wechat2rss.bestblogs.dev', 1),
+('jiqizhixin', '机器之心(微信)', 'tech_media', 'https://wechat2rss.bestblogs.dev/feed/8d97af31b0de9e48da74558af128a4673d78c9a3.xml', 'wechat2rss.bestblogs.dev', 1),
+('liangziwei', '量子位', 'tech_media', 'https://www.qbitai.com/feed', 'www.qbitai.com', 1),
+('tencent-research', '腾讯研究院', 'research_institute', 'https://wechat2rss.bestblogs.dev/feed/6152301e0978bffb0a8284cab339262b9764dcfb.xml', 'wechat2rss.bestblogs.dev', 1),
+('aws-ml-blog', 'AWS ML Blog', 'vendor_blog', 'https://aws.amazon.com/blogs/machine-learning/feed/', 'aws.amazon.com', 1),
+('netflix-techblog', 'Netflix TechBlog','vendor_blog', 'https://netflixtechblog.com/feed', 'netflixtechblog.com', 1),
+('infoq-ai-ml', 'InfoQ AI/ML', 'tech_media', 'https://feed.infoq.com/ai-ml-data-eng/news', 'feed.infoq.com', 1),
+('hackernews', 'Hacker News', 'tech_community', 'https://hnrss.org/frontpage?description=full&q=AI+OR+LLM', 'hnrss.org', 1),
+('huggingface', 'HuggingFace Blog','vendor_blog', 'https://huggingface.co/blog/feed.xml', 'huggingface.co', 1),
+('arxiv-cs-ai', 'arXiv cs.AI', 'academic', 'http://export.arxiv.org/rss/cs.AI', 'export.arxiv.org', 1),
+
+-- === 新增 11 个（来自 check_feeds.sh 去重后）===
+('google-research', 'Google Research', 'vendor_blog', 'http://googleresearch.blogspot.com/atom.xml', 'googleresearch.blogspot.com', 1),
+('deepmind', 'DeepMind Blog', 'vendor_blog', 'https://deepmind.com/blog/feed/basic/', 'deepmind.com', 1),
+('openai-blog', 'OpenAI Blog', 'vendor_blog', 'https://rsshub.app/openai/blog', 'rsshub.app', 1),
+('meta-eng', 'Meta Engineering', 'vendor_blog', 'https://engineering.fb.com/feed/', 'engineering.fb.com', 1),
+('bair', 'BAIR (伯克利AI)', 'academic', 'http://bair.berkeley.edu/blog/feed.xml', 'bair.berkeley.edu', 1),
+('last-week-in-ai', 'Last Week in AI', 'tech_media', 'https://lastweekin.ai/feed/', 'lastweekin.ai', 1),
+('the-batch', 'The Batch (吴恩达)','tech_media', 'https://rsshub.bestblogs.dev/deeplearning/thebatch', 'rsshub.bestblogs.dev', 1),
+('jiqizhixin-web', '机器之心(官网)', 'tech_media', 'https://www.jiqizhixin.com/rss', 'www.jiqizhixin.com', 1),
+('bestblogs', 'BestBlogs 聚合', 'tech_media', 'https://werss.bestblogs.dev/feeds/MP_WXS_3554086560.atom', 'werss.bestblogs.dev', 1),
+('devto-ai', 'Dev.to AI', 'tech_community','https://dev.to/feed/tag/ai', 'dev.to', 1),
+('langchain', 'LangChain Blog', 'vendor_blog', 'https://blog.langchain.dev/rss/', 'blog.langchain.dev', 1);

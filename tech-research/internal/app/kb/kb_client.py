@@ -9,12 +9,47 @@ SDK ?????? TALENTSVIEW_APP_ID / TALENTSVIEW_AGENT_ID ?????
 """
 import os
 import logging
-from typing import List, Dict, Optional
-
-from talentsview import KnowledgeBaseClient
-from talentsview.platform.knowledge_bases.types import MetadataFilter, FilterComparison, FilterComparator, FilterValue, FilterOperator
+from typing import Any, List, Dict, Optional
 
 logger = logging.getLogger("kb")
+
+
+def _load_talentsview_client():
+    """
+    Lazily load TalentsView SDK.
+
+    The internal service can start and accept MySQL imports without the SDK.
+    Knowledge-base upload/query will fail with a clear error if the optional
+    package is not installed.
+    """
+    try:
+        from talentsview import KnowledgeBaseClient
+        return KnowledgeBaseClient
+    except ImportError as e:
+        raise KBError(
+            "talentsview_import",
+            "talentsview SDK is not installed. Install talentsview==1.2.2 "
+            "to enable knowledge-base upload/query, or leave "
+            "EIPLITE_KB_DATASET_ID empty to skip KB upload."
+        ) from e
+
+
+def _load_talentsview_filter_types():
+    """Lazily load TalentsView metadata filter types."""
+    try:
+        from talentsview.platform.knowledge_bases.types import (
+            MetadataFilter,
+            FilterComparison,
+            FilterComparator,
+            FilterValue,
+            FilterOperator,
+        )
+        return MetadataFilter, FilterComparison, FilterComparator, FilterValue, FilterOperator
+    except ImportError as e:
+        raise KBError(
+            "talentsview_import",
+            "talentsview SDK is not installed. Metadata filters require talentsview==1.2.2."
+        ) from e
 
 
 class KBError(Exception):
@@ -31,7 +66,7 @@ class KBClient:
     ?? upload_chunks() ? query()?????????????
 
     ????
-        _client: KnowledgeBaseClient ???????
+        _client: TalentsView KnowledgeBaseClient ???????
         _dataset_id: ????? dataset_id
 
     ?????
@@ -54,12 +89,13 @@ class KBClient:
         """
         self._dataset_id = dataset_id or os.environ.get("EIPLITE_KB_DATASET_ID", "")
         self._chunk_size = chunk_size
-        self._client: Optional[KnowledgeBaseClient] = None
+        self._client: Optional[Any] = None
 
     @property
-    def client(self) -> KnowledgeBaseClient:
+    def client(self) -> Any:
         """??? SDK ?????????????"""
         if self._client is None:
+            KnowledgeBaseClient = _load_talentsview_client()
             self._client = KnowledgeBaseClient()
             logger.info("KBClient initialized: dataset_id=%s", self._dataset_id)
         return self._client
@@ -237,6 +273,13 @@ class KBClient:
             # ?? metadata_filter
             md_filter = None
             if tag_filters:
+                (
+                    MetadataFilter,
+                    FilterComparison,
+                    FilterComparator,
+                    FilterValue,
+                    FilterOperator,
+                ) = _load_talentsview_filter_types()
                 expressions = [
                     FilterComparison(
                         field=f["name"],
