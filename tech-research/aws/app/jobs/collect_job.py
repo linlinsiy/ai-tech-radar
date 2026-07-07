@@ -133,6 +133,17 @@ class CollectOrchestrator:
         logger.error("导入失败结果已持久化: payload=%s, meta=%s", payload_path, meta_path)
         return {"payload_file": payload_path, "meta_file": meta_path}
 
+    @staticmethod
+    def _should_discard_analysis(result: Dict[str, Any]) -> bool:
+        """丢弃低价值非金融垂直场景应用，避免进入 L3 和内部导入。"""
+        analysis = result.get("analysis", {})
+        category = str(analysis.get("category") or "").strip()
+        try:
+            value_score = float(analysis.get("value_score") or 0)
+        except (TypeError, ValueError):
+            value_score = 0
+        return category == "其他AI相关" and value_score <= 5.0
+
     def run(
         self,
         scope: str = "all",
@@ -162,7 +173,7 @@ class CollectOrchestrator:
             "scope": scope,
             "L0_collect": {"total": 0, "sources": 0, "errors": 0},
             "L1_dedup": {"total": 0, "new": 0, "skipped": 0},
-            "L2_analysis": {"total": 0, "success": 0, "failed": 0},
+            "L2_analysis": {"total": 0, "success": 0, "failed": 0, "discarded": 0},
             "L3_insight": {"triggered": 0, "success": 0},
             "import": {"status": "pending"},
         }
@@ -219,6 +230,31 @@ class CollectOrchestrator:
         stats["L2_analysis"]["total"] = len(new_articles)
         stats["L2_analysis"]["success"] = len(l2_results)
         stats["L2_analysis"]["failed"] = len(new_articles) - len(l2_results)
+        kept_l2_results = []
+        discarded_l2_results = []
+        for result in l2_results:
+            if self._should_discard_analysis(result):
+                discarded_l2_results.append(result)
+            else:
+                kept_l2_results.append(result)
+        if discarded_l2_results:
+            logger.info(
+                "低价值非金融垂直场景文章已丢弃: discarded=%d",
+                len(discarded_l2_results),
+            )
+        l2_results = kept_l2_results
+        stats["L2_analysis"]["discarded"] = len(discarded_l2_results)
+
+        if not l2_results:
+            stats["import"]["status"] = "skipped"
+            stats["import"]["reason"] = "all_l2_results_discarded"
+            elapsed = time.time() - start_time
+            stats["elapsed_seconds"] = round(elapsed, 1)
+            logger.info(
+                "L2 分析结果均已丢弃，无需导入: discarded=%d",
+                len(discarded_l2_results),
+            )
+            return stats
 
         # === L3: 深度洞察 ===
         l3_results = []
@@ -266,6 +302,10 @@ class CollectOrchestrator:
                 "title_cn": a.get("title_cn", r["article"].title),
                 "summary_cn": a["summary_cn"],
                 "category": a["category"],
+                "sub_category": a.get("sub_category", ""),
+                "info_type": a.get("info_type", ""),
+                "briefing_focus": a.get("briefing_focus", ""),
+                "analysis_detail": a.get("analysis_detail", {}),
                 "keywords": a["keywords"] if isinstance(a["keywords"], list) else [],
                 "tech_tags": a["tech_tags"] if isinstance(a["tech_tags"], list) else [],
                 "companies": a["companies"] if isinstance(a["companies"], list) else [],

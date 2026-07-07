@@ -23,12 +23,20 @@ ARTICLE_SUMMARY_TEMPLATE = """# {display_title}
 **作者**：{author}
 **发布时间**：{publish_time}
 **原文链接**：{url}
-**技术分类**：{category}
+**资讯分类**：{category}
+**资讯子分类**：{sub_category}
+**资讯类型**：{info_type}
 **原文语言**：{source_language}
 **价值评分**：{value_score}/10
 
 ## 中文摘要（辅助入口）
 {summary_cn}
+
+## 简报表达重点
+{briefing_focus}
+
+## 结构化分析详情
+{analysis_detail}
 
 ## 标准术语映射
 {standard_terms}
@@ -45,7 +53,7 @@ DEEP_INSIGHT_TEMPLATE = """# {title} — 深度洞察
 
 **来源**：{source_name}
 **原文链接**：{url}
-**技术分类**：{category}
+**资讯分类**：{category}
 **价值评分**：{value_score}/10
 
 ## 技术背景
@@ -117,6 +125,32 @@ def _format_standard_terms(standard_terms: Optional[List[Dict[str, Any]]]) -> st
     return "\n".join(lines) if lines else "N/A"
 
 
+def _format_analysis_detail(analysis_detail: Optional[Dict[str, Any]]) -> str:
+    """格式化通用结构化分析详情，避免为不同资讯类型扩展固定列。"""
+    if not analysis_detail:
+        return "N/A"
+
+    labels = {
+        "problem_solved": "解决的问题",
+        "what_changed": "发生的变化",
+        "how_it_works": "大致做法",
+        "business_context": "业务背景",
+        "finance_scenario": "金融场景",
+        "risk_or_governance": "风险与治理",
+        "ecosystem_signal": "生态信号",
+        "note": "补充说明",
+    }
+    lines = []
+    for key, value in analysis_detail.items():
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        lines.append(f"- {labels.get(key, key)}：{text}")
+    return "\n".join(lines) if lines else "N/A"
+
+
 def generate_article_summary(
     title: str,
     source_name: str,
@@ -124,6 +158,10 @@ def generate_article_summary(
     summary_cn: str,
     title_cn: str = "",
     source_language: str = "unknown",
+    sub_category: str = "",
+    info_type: str = "",
+    briefing_focus: str = "",
+    analysis_detail: Optional[Dict[str, Any]] = None,
     standard_terms: Optional[List[Dict[str, Any]]] = None,
     raw_summary: str = "",
     full_content: str = "",
@@ -142,8 +180,12 @@ def generate_article_summary(
         summary_cn: 中文摘要
         title_cn: 中文标题
         source_language: 原文语言
+        sub_category: 资讯子分类
+        info_type: 资讯类型
+        briefing_focus: 简报表达重点
+        analysis_detail: 结构化分析详情
         standard_terms: 标准术语映射
-        category: 技术分类
+        category: 资讯分类
         author: 作者
         publish_time: 发布时间
         value_score: 价值评分
@@ -158,9 +200,13 @@ def generate_article_summary(
         publish_time=_format_time(publish_time),
         url=url,
         category=category or "N/A",
+        sub_category=sub_category or "N/A",
+        info_type=info_type or "N/A",
         source_language=source_language or "unknown",
         value_score=f"{value_score:.1f}" if value_score is not None else "N/A",
         summary_cn=summary_cn,
+        briefing_focus=briefing_focus or "N/A",
+        analysis_detail=_format_analysis_detail(analysis_detail),
         standard_terms=_format_standard_terms(standard_terms),
         raw_summary=raw_summary or "N/A",
         full_content=full_content or "N/A",

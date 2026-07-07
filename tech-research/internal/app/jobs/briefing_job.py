@@ -26,7 +26,7 @@ def _query_articles(session, start_date: datetime, end_date: datetime) -> List[D
         session: DB 会话
         start_date: 开始日期
         end_date: 结束日期
-    出参：文章列表 [{"title": ..., "category": ..., "summary_cn": ..., "value_score": ..., "url": ...}]
+    出参：文章列表 [{"title": ..., "category": ..., "sub_category": ..., "summary_cn": ..., "value_score": ..., "url": ...}]
     """
     from sqlalchemy import desc
 
@@ -48,6 +48,9 @@ def _query_articles(session, start_date: datetime, end_date: datetime) -> List[D
             "title": art.title,
             "url": art.url,
             "category": analysis.category or "",
+            "sub_category": analysis.sub_category or "",
+            "info_type": analysis.info_type or "",
+            "briefing_focus": analysis.briefing_focus or "",
             "summary_cn": analysis.summary_cn or "",
             "value_score": float(analysis.value_score) if analysis.value_score else 0,
         })
@@ -189,10 +192,17 @@ def _format_articles_list(articles: List[Dict]) -> str:
     """格式化文章列表为 LLM 输入文本"""
     lines = []
     for i, a in enumerate(articles, 1):
+        category_text = a["category"]
+        if a.get("sub_category"):
+            category_text = f"{category_text}/{a['sub_category']}" if category_text else a["sub_category"]
+        if a.get("info_type"):
+            category_text = f"{category_text} · {a['info_type']}" if category_text else a["info_type"]
+        focus = a.get("briefing_focus") or a["summary_cn"][:200]
         lines.append(
-            f"{i}. 【{a['category']}】{a['title']}\n"
+            f"{i}. 【{category_text}】{a['title']}\n"
             f"   评分: {a['value_score']:.1f}/10\n"
             f"   摘要: {a['summary_cn'][:200]}\n"
+            f"   简报重点: {focus}\n"
             f"   链接: {a['url']}"
         )
     return "\n\n".join(lines)
@@ -277,7 +287,10 @@ def handle_briefing_job(params: str = "") -> Dict[str, Any]:
         # TODO: 从配置文件加载 prompt 模板（当前硬编码占位）
         system_prompt = (
             "你是信息技术部架构委员会的技术简报编辑。基于近期外部 AI 技术资讯的分析结果，"
-            "生成一份面向内部技术团队的技术趋势简报。风格要求：专业、精炼、有洞察，避免空泛。"
+            "生成一份面向全公司或全部门阅读的 AI 技术趋势雷达文章。文章的主要作用是像雷达一样"
+            "扫描并呈现外部 AI 技术资讯，帮助读者了解近期出现了哪些技术内容、它们解决什么问题、"
+            "具体做了什么以及大致如何实现。风格要求：专业、精炼、客观，避免过度主观发挥，"
+            "也避免写成项目建议书、风险清单或任务分解。"
         )
         type_cn = {"weekly": "周报", "monthly": "月报", "topic": "专题报告"}
         user_prompt = (
@@ -285,11 +298,14 @@ def handle_briefing_job(params: str = "") -> Dict[str, Any]:
             f"【覆盖时间】{time_range_str}\n\n"
             f"【收录文章（按价值评分降序前 {len(articles)} 篇）】\n{articles_text}\n\n"
             f"【深度洞察文章（{len(insights)} 篇）】\n{insights_text}\n\n"
-            "请按以下结构组织简报：\n"
-            "1. 本期概览（1-2 段）\n"
-            "2. 重点趋势（3-5 条，每条含趋势描述和代表性文章）\n"
-            "3. 值得关注（2-4 篇简述）\n\n"
-            "格式：Markdown，每个趋势包含关联文章的原文链接。"
+            "请按以下结构组织简报，面向全公司/全部门统一阅读，不要按读者身份拆分栏目，"
+            "不要写成具体决策事项、实施计划、风险清单或行动任务：\n"
+            "1. 雷达概览（用 1-2 段客观概括本期收集到的资讯范围、主要技术类别和信息密度）\n"
+            "2. 技术资讯分类摘要（正文主体，按技术类别组织，如大模型、Agent、RAG、推理优化、多模态、AI工程系统、安全与治理等；每类说明本期收集到哪些内容）\n"
+            "3. 重点技术条目（选择高价值或有代表性的资讯逐条说明：分类、解决的问题、具体做了什么、大致怎么做的、关联原文链接）\n"
+            "4. 共性问题与方法归纳（仅基于已收集资讯，归纳这些文章共同关注的问题和常见技术做法，不做过度推演）\n"
+            "5. 信号源索引（标题、来源、评分、链接）\n\n"
+            "格式：Markdown。正文以技术资讯事实和归纳为主，少写主观判断；涉及总结时必须能从输入文章中找到依据。"
         )
 
         # 调用内部大模型

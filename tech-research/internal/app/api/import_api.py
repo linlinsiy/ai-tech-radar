@@ -96,7 +96,15 @@ class AnalysisItem(BaseModel):
 
     summary_cn: str = Field(..., description="中文摘要")
 
-    category: Optional[str] = Field(None, description="技术分类")
+    category: Optional[str] = Field(None, description="资讯一级分类")
+
+    sub_category: Optional[str] = Field(None, description="资讯子分类")
+
+    info_type: Optional[str] = Field(None, description="资讯类型")
+
+    briefing_focus: Optional[str] = Field(None, description="简报表达重点")
+
+    analysis_detail: Optional[Dict[str, Any]] = Field(None, description="结构化分析详情")
 
     keywords: Optional[List[str]] = Field(None, description="关键词列表")
 
@@ -442,6 +450,14 @@ async def handle_import(request: Request, body: ImportRequest):
 
                     category=item.category,
 
+                    sub_category=item.sub_category,
+
+                    info_type=item.info_type,
+
+                    briefing_focus=item.briefing_focus,
+
+                    analysis_detail=item.analysis_detail,
+
                     keywords=",".join(item.keywords) if item.keywords else None,
 
                     tech_tags=json.dumps(item.tech_tags) if item.tech_tags else None,
@@ -614,6 +630,14 @@ async def handle_import(request: Request, body: ImportRequest):
 
                             summary_cn=matched.summary_cn if matched else "",
 
+                            sub_category=matched.sub_category if matched else "",
+
+                            info_type=matched.info_type if matched else "",
+
+                            briefing_focus=matched.briefing_focus if matched else "",
+
+                            analysis_detail=matched.analysis_detail if matched else {},
+
                             standard_terms=matched.standard_terms if matched else [],
 
                             raw_summary=item.raw_summary or "",
@@ -645,6 +669,8 @@ async def handle_import(request: Request, body: ImportRequest):
                             "source": src_name,
                             "source_name": src_name,
                             "category": matched.category if matched else "",
+                            "sub_category": matched.sub_category if matched else "",
+                            "info_type": matched.info_type if matched else "",
                             "lang": "mixed",
                             "source_language": matched.source_language if matched else "unknown",
                             "title": item.title,

@@ -95,6 +95,8 @@ class PromptRegistry:
                     "system": props.get("system", ""),
                     "prompt": props.get("prompt", ""),
                     "categories": props.get("categories", ""),
+                    "sub_categories": props.get("sub_categories", ""),
+                    "info_types": props.get("info_types", ""),
                     "term_glossary": props.get("term_glossary", ""),
                     "model": props.get("model", ""),
                 }
@@ -110,7 +112,7 @@ class PromptRegistry:
 
         入参：
             name: prompt 名称，如 l2_summary
-        出参：prompt 字典 {version, system, prompt, categories, model}，不存在返回 None
+        出参：prompt 字典 {version, system, prompt, categories, sub_categories, info_types, model}，不存在返回 None
         """
         return self._prompts.get(name)
 

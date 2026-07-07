@@ -29,7 +29,7 @@ class L2Analyzer:
         llm: LLMClient 实例
         prompts: PromptRegistry 实例
         max_concurrency: 最大并发数
-        categories: 技术分类候选列表
+        categories: 资讯一级分类候选列表
     """
 
     def __init__(
@@ -51,6 +51,9 @@ class L2Analyzer:
         # 从 prompt 配置获取分类候选列表
         tmpl = prompts.get("l2_summary")
         self.categories = (tmpl or {}).get("categories", "")
+        self.allowed_categories = self._ensure_list(self.categories)
+        self.sub_categories = (tmpl or {}).get("sub_categories", "")
+        self.info_types = (tmpl or {}).get("info_types", "")
         self.term_glossary = (tmpl or {}).get("term_glossary", "")
 
     def analyze_batch(
@@ -116,6 +119,8 @@ class L2Analyzer:
             title=article.title,
             summary=input_text,
             categories=self.categories,
+            sub_categories=self.sub_categories,
+            info_types=self.info_types,
             term_glossary=self.term_glossary,
         )
         if not system or not user:
@@ -144,10 +149,6 @@ class L2Analyzer:
             logger.warning("L2 JSON 解析失败: %s", article.url_hash[:16])
             return None
 
-        # 组装分析结果
-        scores = self._extract_scores(parsed)
-        value_score = sum(scores.values()) / len(scores) if scores else 0.0
-
         standard_terms = self._normalize_standard_terms(parsed.get("standard_terms", []))
         source_language = parsed.get("source_language") or self._detect_source_language(
             f"{article.title}\n{input_text}"
@@ -155,11 +156,19 @@ class L2Analyzer:
         if source_language not in ("en", "zh", "mixed", "unknown"):
             source_language = self._detect_source_language(f"{article.title}\n{input_text}")
 
+        # 组装分析结果
+        scores = self._extract_scores(parsed)
+        value_score = sum(scores.values()) / len(scores) if scores else 0.0
+
         analysis = {
             "title_cn": str(parsed.get("title_cn") or article.title or "").strip(),
             "source_language": source_language,
             "summary_cn": parsed.get("summary_cn", parsed.get("summary", "")),
-            "category": parsed.get("category", ""),
+            "category": self._normalize_category(parsed.get("category", "")),
+            "sub_category": str(parsed.get("sub_category") or "").strip(),
+            "info_type": str(parsed.get("info_type") or "").strip(),
+            "briefing_focus": str(parsed.get("briefing_focus") or "").strip(),
+            "analysis_detail": self._ensure_dict(parsed.get("analysis_detail")),
             "keywords": self._ensure_list(parsed.get("keywords", [])),
             "tech_tags": self._ensure_list(parsed.get("tech_tags", [])),
             "companies": self._ensure_list(parsed.get("companies", [])),
@@ -213,6 +222,53 @@ class L2Analyzer:
         return terms
 
     @staticmethod
+    def _ensure_dict(value) -> Dict[str, Any]:
+        """将 LLM 返回的对象统一为字典，非对象内容保留为 note。"""
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str) and value.strip():
+            return {"note": value.strip()}
+        return {}
+
+    def _normalize_category(self, value) -> str:
+        """将模型返回的分类约束到候选一级分类，避免垂直行业应用污染金融分类查询。"""
+        raw = str(value or "").strip()
+        fallback = "其他AI相关" if "其他AI相关" in self.allowed_categories else ""
+        if not raw:
+            return fallback
+        if raw in self.allowed_categories:
+            return raw
+
+        synonyms = {
+            "大语言模型": "大模型基础技术",
+            "LLM": "大模型基础技术",
+            "AI Agent": "Agent与智能体",
+            "智能体": "Agent与智能体",
+            "多模态": "多模态技术",
+            "部署与推理": "AI基础设施",
+            "数据与评测": "AI基础设施",
+            "安全与对齐": "安全与伦理",
+            "开源": "开源生态",
+            "金融AI": "AI在金融领域应用",
+            "金融应用": "AI在金融领域应用",
+        }
+        for key, target in synonyms.items():
+            if key in raw and target in self.allowed_categories:
+                return target
+
+        non_finance_vertical_terms = (
+            "医学", "医疗", "化学", "物理", "科学", "科研", "教育", "制造", "政务"
+        )
+        if any(term in raw for term in non_finance_vertical_terms):
+            return fallback
+
+        for candidate in self.allowed_categories:
+            if candidate and (candidate in raw or raw in candidate):
+                return candidate
+
+        return fallback
+
+    @staticmethod
     def _detect_source_language(text: str) -> str:
         """粗略识别原文语言，用于知识库标签和展示。"""
         if not text:
@@ -230,11 +286,11 @@ class L2Analyzer:
     @staticmethod
     def _extract_scores(parsed: Dict) -> Dict[str, float]:
         """
-        从 LLM 响应中提取五维度评分
+        从 LLM 响应中提取多维度评分
 
         入参：
             parsed: LLM JSON 响应
-        出参：{tech_depth, engineering, trend, credibility, timeliness}
+        出参：评分维度字典
         """
         score_keys = {
             "tech_depth": ["tech_depth", "score_tech_depth", "技术深度"],
