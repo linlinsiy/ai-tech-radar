@@ -100,7 +100,7 @@ def _call_internal_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
     出参：生成的简报正文，失败返回 None
 
     调用内部 Qwen3-32B-AWQ 模型的 chat/completions 接口，
-    支持重试（最多 2 次，10s/30s 退避），API Key 为可选。
+    超时时间 300 秒，不进行失败重试，API Key 为可选。
     """
     cfg = InternalConfig.get_instance().internal_llm_config
     api_key = cfg["api_key"]
@@ -126,12 +126,13 @@ def _call_internal_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
         "max_tokens": 3000,
     }
 
-    max_retries = 2
+    timeout_seconds = 300.0
+    max_retries = 0
     retry_backoff = (10, 30)
 
     for attempt in range(max_retries + 1):
         try:
-            resp = httpx.post(url, headers=headers, json=payload, timeout=60.0)
+            resp = httpx.post(url, headers=headers, json=payload, timeout=timeout_seconds)
         except httpx.TimeoutException:
             logger.warning("内部 LLM 超时 (attempt %d/%d): %s",
                            attempt + 1, max_retries + 1, url)
