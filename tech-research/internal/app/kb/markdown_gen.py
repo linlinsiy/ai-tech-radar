@@ -8,29 +8,35 @@ Markdown 文件生成模块
 - deep_insight: 深度洞察卡片
 - briefing: 简报文档
 """
-import logging
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
+import logging
 
 logger = logging.getLogger("kb.markdown_gen")
 
 # === 文章摘要卡片模板 ===
-ARTICLE_SUMMARY_TEMPLATE = """# {title}
+ARTICLE_SUMMARY_TEMPLATE = """# {display_title}
 
 **来源**：{source_name}
+**原始标题**：{title}
+**中文标题**：{title_cn}
 **作者**：{author}
 **发布时间**：{publish_time}
 **原文链接**：{url}
 **技术分类**：{category}
+**原文语言**：{source_language}
 **价值评分**：{value_score}/10
 
-## AI 分析摘要
+## 中文摘要（辅助入口）
 {summary_cn}
+
+## 标准术语映射
+{standard_terms}
 
 ## 原文摘要
 {raw_summary}
 
-## 全文
+## 原文正文（主召回内容）
 {full_content}
 """
 
@@ -77,11 +83,48 @@ def _format_time(dt) -> str:
     return str(dt)
 
 
+def _format_standard_terms(standard_terms: Optional[List[Dict[str, Any]]]) -> str:
+    """格式化标准术语映射，供知识库中文和英文双入口召回。"""
+    if not standard_terms:
+        return "N/A"
+
+    lines = []
+    for item in standard_terms:
+        if not isinstance(item, dict):
+            text = str(item).strip()
+            if text:
+                lines.append(f"- {text}")
+            continue
+
+        term = str(item.get("term") or "").strip()
+        abbr = str(item.get("abbr") or "").strip()
+        zh = str(item.get("zh") or "").strip()
+        aliases = item.get("aliases") or []
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        aliases_text = "，".join(str(a).strip() for a in aliases if str(a).strip())
+
+        head = term
+        if abbr and abbr != term:
+            head = f"{head} ({abbr})" if head else abbr
+        if zh:
+            head = f"{head} -> {zh}" if head else zh
+        if aliases_text:
+            head = f"{head}；别名：{aliases_text}"
+        if head:
+            lines.append(f"- {head}")
+
+    return "\n".join(lines) if lines else "N/A"
+
+
 def generate_article_summary(
     title: str,
     source_name: str,
     url: str,
     summary_cn: str,
+    title_cn: str = "",
+    source_language: str = "unknown",
+    standard_terms: Optional[List[Dict[str, Any]]] = None,
     raw_summary: str = "",
     full_content: str = "",
     category: Optional[str] = None,
@@ -97,6 +140,9 @@ def generate_article_summary(
         source_name: 来源名称
         url: 原文链接
         summary_cn: 中文摘要
+        title_cn: 中文标题
+        source_language: 原文语言
+        standard_terms: 标准术语映射
         category: 技术分类
         author: 作者
         publish_time: 发布时间
@@ -104,14 +150,18 @@ def generate_article_summary(
     出参：Markdown 格式文本
     """
     return ARTICLE_SUMMARY_TEMPLATE.format(
+        display_title=title_cn or title,
         title=title,
+        title_cn=title_cn or "N/A",
         source_name=source_name,
         author=author or "N/A",
         publish_time=_format_time(publish_time),
         url=url,
         category=category or "N/A",
+        source_language=source_language or "unknown",
         value_score=f"{value_score:.1f}" if value_score is not None else "N/A",
         summary_cn=summary_cn,
+        standard_terms=_format_standard_terms(standard_terms),
         raw_summary=raw_summary or "N/A",
         full_content=full_content or "N/A",
     )

@@ -141,7 +141,7 @@ class AWSConfig:
             "model": self.get(option="l3_model.model"),
             "temperature": self.get_float("l3_model.temperature", 0.3),
             "max_tokens": self.get_int("l3_model.max_tokens", 4096),
-            "timeout_seconds": self.get_int("l3_model.timeout_seconds", 120),
+            "timeout_seconds": self.get_int("l3_model.timeout_seconds", 300),
             "max_concurrency": self.get_int("l3_model.max_concurrency", 1),
         }
 

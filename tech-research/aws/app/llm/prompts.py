@@ -95,6 +95,7 @@ class PromptRegistry:
                     "system": props.get("system", ""),
                     "prompt": props.get("prompt", ""),
                     "categories": props.get("categories", ""),
+                    "term_glossary": props.get("term_glossary", ""),
                     "model": props.get("model", ""),
                 }
                 logger.info(

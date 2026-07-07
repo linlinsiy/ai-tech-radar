@@ -53,13 +53,19 @@ class CollectOrchestrator:
             cache_path=f"{config.data_dir}/interim/processed_hashes.json"
         )
 
-        # 初始化 LLM 客户端
+        # 初始化 LLM 客户端：L2 / L3 使用不同超时时间
         api_key = self._get_api_key()
-        self.llm = LLMClient(
+        self.l2_llm = LLMClient(
             api_key=api_key,
             base_url=os.environ.get("OPENAI_BASE_URL"),  # 临时：本地测试指向内部大模型
             max_retries=2,
             timeout=config.l2_model["timeout_seconds"],
+        )
+        self.l3_llm = LLMClient(
+            api_key=api_key,
+            base_url=os.environ.get("OPENAI_BASE_URL"),  # 临时：本地测试指向内部大模型
+            max_retries=2,
+            timeout=config.l3_model["timeout_seconds"],
         )
 
         # 初始化 Prompt 注册表
@@ -67,12 +73,12 @@ class CollectOrchestrator:
 
         # 初始化分析器
         self.l2 = L2Analyzer(
-            self.llm, self.prompts,
+            self.l2_llm, self.prompts,
             max_concurrency=config.l2_model["max_concurrency"],
             model_name=config.l2_model["model"]
         )
         self.l3 = L3Analyzer(
-            self.llm, self.prompts,
+            self.l3_llm, self.prompts,
             min_score=config.deep_insight_min_score,
             require_full_content=config.deep_insight_require_full_content,
             model_name=config.l3_model["model"]
@@ -94,6 +100,38 @@ class CollectOrchestrator:
         if not key:
             logger.warning("OPENAI_API_KEY 未设置")
         return key
+
+    def _persist_failed_import_payload(
+        self,
+        payload: Dict[str, Any],
+        import_result: Dict[str, Any],
+        stats: Dict[str, Any],
+    ) -> Dict[str, str]:
+        """导入失败时保存请求体，便于人工调用内部导入接口重试。"""
+        batch_no = payload.get("batch", {}).get("batch_no") or stats.get("batch_no") or "unknown"
+        retry_dir = os.path.join(self.config.data_dir, "failed_imports")
+        os.makedirs(retry_dir, exist_ok=True)
+
+        payload_path = os.path.join(retry_dir, f"{batch_no}.payload.json")
+        meta_path = os.path.join(retry_dir, f"{batch_no}.meta.json")
+
+        with open(payload_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
+
+        metadata = {
+            "batch_no": batch_no,
+            "saved_at": datetime.now().isoformat(),
+            "endpoint_url": self.config.import_endpoint_url,
+            "reason": import_result.get("error", "unknown"),
+            "import_result": import_result,
+            "stats": stats,
+            "payload_file": payload_path,
+        }
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2, default=str)
+
+        logger.error("导入失败结果已持久化: payload=%s, meta=%s", payload_path, meta_path)
+        return {"payload_file": payload_path, "meta_file": meta_path}
 
     def run(
         self,
@@ -224,11 +262,14 @@ class CollectOrchestrator:
             a = r["analysis"]
             analysis_items.append({
                 "article_url_hash": r["article"].url_hash,
+                "source_language": a.get("source_language", "unknown"),
+                "title_cn": a.get("title_cn", r["article"].title),
                 "summary_cn": a["summary_cn"],
                 "category": a["category"],
                 "keywords": a["keywords"] if isinstance(a["keywords"], list) else [],
                 "tech_tags": a["tech_tags"] if isinstance(a["tech_tags"], list) else [],
                 "companies": a["companies"] if isinstance(a["companies"], list) else [],
+                "standard_terms": a.get("standard_terms", []),
                 "score_tech_depth": a["score_tech_depth"],
                 "score_engineering": a["score_engineering"],
                 "score_trend": a["score_trend"],
@@ -267,6 +308,12 @@ class CollectOrchestrator:
         stats["import"]["status"] = "success" if import_result.get("success") else "failed"
         if import_result.get("error"):
             stats["import"]["error"] = import_result["error"]
+        if not import_result.get("success"):
+            stats["import"]["retry_files"] = self._persist_failed_import_payload(
+                payload,
+                import_result,
+                stats,
+            )
 
         elapsed = time.time() - start_time
         stats["elapsed_seconds"] = round(elapsed, 1)

@@ -51,6 +51,7 @@ class L2Analyzer:
         # 从 prompt 配置获取分类候选列表
         tmpl = prompts.get("l2_summary")
         self.categories = (tmpl or {}).get("categories", "")
+        self.term_glossary = (tmpl or {}).get("term_glossary", "")
 
     def analyze_batch(
         self, articles: List[RawArticle]
@@ -115,6 +116,7 @@ class L2Analyzer:
             title=article.title,
             summary=input_text,
             categories=self.categories,
+            term_glossary=self.term_glossary,
         )
         if not system or not user:
             logger.warning("L2 Prompt 渲染失败: %s", article.url_hash[:16])
@@ -146,12 +148,22 @@ class L2Analyzer:
         scores = self._extract_scores(parsed)
         value_score = sum(scores.values()) / len(scores) if scores else 0.0
 
+        standard_terms = self._normalize_standard_terms(parsed.get("standard_terms", []))
+        source_language = parsed.get("source_language") or self._detect_source_language(
+            f"{article.title}\n{input_text}"
+        )
+        if source_language not in ("en", "zh", "mixed", "unknown"):
+            source_language = self._detect_source_language(f"{article.title}\n{input_text}")
+
         analysis = {
+            "title_cn": str(parsed.get("title_cn") or article.title or "").strip(),
+            "source_language": source_language,
             "summary_cn": parsed.get("summary_cn", parsed.get("summary", "")),
             "category": parsed.get("category", ""),
-            "keywords": parsed.get("keywords", []),
-            "tech_tags": parsed.get("tech_tags", []),
-            "companies": parsed.get("companies", []),
+            "keywords": self._ensure_list(parsed.get("keywords", [])),
+            "tech_tags": self._ensure_list(parsed.get("tech_tags", [])),
+            "companies": self._ensure_list(parsed.get("companies", [])),
+            "standard_terms": standard_terms,
             "score_tech_depth": scores.get("tech_depth", 5.0),
             "score_engineering": scores.get("engineering", 5.0),
             "score_trend": scores.get("trend", 5.0),
@@ -163,6 +175,57 @@ class L2Analyzer:
         }
 
         return {"article": article, "analysis": analysis}
+
+    @staticmethod
+    def _ensure_list(value) -> List[str]:
+        """将 LLM 返回的字符串或数组统一为字符串数组。"""
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(v).strip() for v in value if str(v).strip()]
+        if isinstance(value, str):
+            normalized = value.replace("，", ",").replace("；", ",").replace(";", ",")
+            return [v.strip() for v in normalized.split(",") if v.strip()]
+        return [str(value).strip()] if str(value).strip() else []
+
+    @staticmethod
+    def _normalize_standard_terms(value) -> List[Dict[str, Any]]:
+        """标准化术语映射，兼容模型返回字符串或对象数组。"""
+        if not value:
+            return []
+        items = value if isinstance(value, list) else [value]
+        terms = []
+        for item in items[:10]:
+            if isinstance(item, dict):
+                aliases = item.get("aliases", [])
+                if isinstance(aliases, str):
+                    aliases = L2Analyzer._ensure_list(aliases)
+                term = {
+                    "term": str(item.get("term") or item.get("en") or "").strip(),
+                    "abbr": str(item.get("abbr") or "").strip(),
+                    "zh": str(item.get("zh") or item.get("zh_cn") or "").strip(),
+                    "aliases": [str(a).strip() for a in aliases if str(a).strip()],
+                }
+                if term["term"] or term["zh"]:
+                    terms.append(term)
+            elif isinstance(item, str) and item.strip():
+                terms.append({"term": item.strip(), "abbr": "", "zh": "", "aliases": []})
+        return terms
+
+    @staticmethod
+    def _detect_source_language(text: str) -> str:
+        """粗略识别原文语言，用于知识库标签和展示。"""
+        if not text:
+            return "unknown"
+        chinese = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+        latin = sum(1 for ch in text if ch.isascii() and ch.isalpha())
+        if chinese and latin > chinese * 2:
+            return "mixed"
+        if chinese:
+            return "zh"
+        if latin:
+            return "en"
+        return "unknown"
 
     @staticmethod
     def _extract_scores(parsed: Dict) -> Dict[str, float]:

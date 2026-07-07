@@ -90,6 +90,10 @@ class AnalysisItem(BaseModel):
 
     article_url_hash: str = Field(..., description="关联文章的 url_hash")
 
+    source_language: Optional[str] = Field("unknown", description="原文语言：en / zh / mixed / unknown")
+
+    title_cn: Optional[str] = Field(None, description="中文标题")
+
     summary_cn: str = Field(..., description="中文摘要")
 
     category: Optional[str] = Field(None, description="技术分类")
@@ -99,6 +103,8 @@ class AnalysisItem(BaseModel):
     tech_tags: Optional[List[str]] = Field(None, description="技术标签")
 
     companies: Optional[List[str]] = Field(None, description="涉及厂商")
+
+    standard_terms: Optional[List[Dict[str, Any]]] = Field(None, description="标准术语映射")
 
     score_tech_depth: Optional[float] = Field(None, ge=1.0, le=10.0, description="技术深度")
 
@@ -602,7 +608,13 @@ async def handle_import(request: Request, body: ImportRequest):
 
                             title=item.title, source_name=src_name, url=item.url,
 
+                            title_cn=matched.title_cn if matched else "",
+
+                            source_language=matched.source_language if matched else "unknown",
+
                             summary_cn=matched.summary_cn if matched else "",
+
+                            standard_terms=matched.standard_terms if matched else [],
 
                             raw_summary=item.raw_summary or "",
                             full_content=item.full_content or "",
@@ -615,7 +627,31 @@ async def handle_import(request: Request, body: ImportRequest):
 
                         )
 
-                        tags = {"source": src_name, "category": matched.category if matched else "", "lang": "zh", "kb_type": "article_summary"}
+                        standard_terms = matched.standard_terms if matched else []
+
+                        term_tags = []
+
+                        for term in standard_terms or []:
+
+                            if isinstance(term, dict):
+
+                                label = term.get("term") or term.get("zh")
+
+                                if label:
+
+                                    term_tags.append(str(label))
+
+                        tags = {
+                            "source": src_name,
+                            "source_name": src_name,
+                            "category": matched.category if matched else "",
+                            "lang": "mixed",
+                            "source_language": matched.source_language if matched else "unknown",
+                            "title": item.title,
+                            "title_cn": matched.title_cn if matched else "",
+                            "standard_terms": term_tags,
+                            "kb_type": "article_summary",
+                        }
 
                         fname = f"{item.url_hash[:16]}_{item.title[:30]}.md"
 
