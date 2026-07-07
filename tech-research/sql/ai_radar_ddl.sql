@@ -227,5 +227,5 @@ INSERT INTO ai_radar_source (source_code, source_name, source_type, access_url, 
 -- 社区信号（1源）
 ('hackernews',      'Hacker News',          'tech_community',      'https://hnrss.org/frontpage?description=full&q=AI+OR+LLM',                            'hnrss.org',                 1),
 
--- 金融专项（1源）⚠️ PLACEHOLDER 需替换
-('fintech-ai',      '金融科技研究',          'tech_media',          'https://wechat2rss.bestblogs.dev/feed/PLACEHOLDER_NEED_GENERATE.xml',                 'wechat2rss.bestblogs.dev',   1);
+-- 学术前沿补充（1源）
+('arxiv-cs-ce',     'arXiv cs.CE（计算工程）','academic',            'http://export.arxiv.org/rss/cs.CE',                                                   'export.arxiv.org',          1);
