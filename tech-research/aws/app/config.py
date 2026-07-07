@@ -129,8 +129,9 @@ class AWSConfig:
             "model": self.get(option="l2_model.model"),
             "temperature": self.get_float("l2_model.temperature", 0.3),
             "max_tokens": self.get_int("l2_model.max_tokens", 2048),
-            "timeout_seconds": self.get_int("l2_model.timeout_seconds", 60),
+            "timeout_seconds": self.get_int("l2_model.timeout_seconds", 120),
             "max_concurrency": self.get_int("l2_model.max_concurrency", 3),
+            "max_retries": self.get_int("l2_model.max_retries", 0),
         }
 
     @property
@@ -143,6 +144,7 @@ class AWSConfig:
             "max_tokens": self.get_int("l3_model.max_tokens", 4096),
             "timeout_seconds": self.get_int("l3_model.timeout_seconds", 300),
             "max_concurrency": self.get_int("l3_model.max_concurrency", 1),
+            "max_retries": self.get_int("l3_model.max_retries", 0),
         }
 
     # === 导入接口配置 ===

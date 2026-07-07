@@ -58,13 +58,13 @@ class CollectOrchestrator:
         self.l2_llm = LLMClient(
             api_key=api_key,
             base_url=os.environ.get("OPENAI_BASE_URL"),  # 临时：本地测试指向内部大模型
-            max_retries=2,
+            max_retries=config.l2_model["max_retries"],
             timeout=config.l2_model["timeout_seconds"],
         )
         self.l3_llm = LLMClient(
             api_key=api_key,
             base_url=os.environ.get("OPENAI_BASE_URL"),  # 临时：本地测试指向内部大模型
-            max_retries=2,
+            max_retries=config.l3_model["max_retries"],
             timeout=config.l3_model["timeout_seconds"],
         )
 
