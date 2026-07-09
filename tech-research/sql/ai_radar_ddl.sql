@@ -174,7 +174,7 @@ CREATE INDEX IF NOT EXISTS idx_info_type
 -- 表: ai_radar_source
 -- * 所有 URL 均经 curl 200 验证通过
 -- * OpenAI/DeepMind/HuggingFace/量子位 RSS 正文空，改用 web 采集
--- * 恒生电子 JS空壳，替换为东方财富
+-- * 恒生电子 JS空壳，替换为零壹财经
 -- ============================================================
 
 INSERT INTO ai_radar_source (code, name, type, category, access_url, domain, fetch_method, enabled) VALUES
@@ -248,8 +248,8 @@ INSERT INTO ai_radar_source (code, name, type, category, access_url, domain, fet
 -- ============================================================================
 -- 十、金融应用（2个）
 -- ============================================================================
-('10jqka-news',             '同花顺金融科技',               'industry_application', '金融应用',  'https://www.10jqka.com.cn/fintech/',                      'www.10jqka.com.cn',           'web',  1),
-('eastmoney-ai',            '东方财富财经',                 'industry_application', '金融应用',  'https://finance.eastmoney.com/fintech/',                  'finance.eastmoney.com',       'web',  1);
+('10jqka-news',             '同花顺金融AI',                 'industry_application', '金融应用',  'https://news.10jqka.com.cn/',                             'news.10jqka.com.cn',          'web',  1),
+('01caijing-fintech',       '零壹财经金融科技',             'industry_application', '金融应用',  'https://www.01caijing.com/fintech/',                      'www.01caijing.com',           'web',  1);
 
 
 ALTER TABLE ai_radar_import_batch ADD COLUMN `task_type` varchar(32) DEFAULT 'manual' COMMENT '任务类型' AFTER `scope`;
