@@ -6,30 +6,6 @@ SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
 -- ----------------------------
--- 数据源表
--- ----------------------------
-DROP TABLE IF EXISTS `ai_radar_source`;
-CREATE TABLE `ai_radar_source` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-  `code` varchar(64) NOT NULL COMMENT '数据源唯一编码',
-  `name` varchar(128) NOT NULL COMMENT '数据源名称',
-  `type` varchar(32) NOT NULL COMMENT '数据源类型(academic/vendor_blog/tech_media/tech_community/industry_application)',
-  `category` varchar(64) NOT NULL COMMENT '内容分类(大模型基础技术/Agent与智能体/多模态技术/AI基础设施/生成式AI应用/安全与伦理/开源生态/行业动态/AI在金融领域应用)',
-  `access_url` varchar(256) NOT NULL COMMENT '采集地址',
-  `domain` varchar(128) NOT NULL COMMENT '域名白名单',
-  `fetch_method` varchar(16) NOT NULL DEFAULT 'rss' COMMENT '采集方式(rss/html)',
-  `enabled` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否启用',
-  `last_collect_time` datetime DEFAULT NULL COMMENT '最后采集时间',
-  `last_collect_status` varchar(16) DEFAULT NULL COMMENT '最后采集状态(success/failed)',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_code` (`code`),
-  KEY `idx_category` (`category`),
-  KEY `idx_enabled` (`enabled`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据源配置表';
-
--- ----------------------------
 -- 文章原始数据表
 -- ----------------------------
 DROP TABLE IF EXISTS `ai_radar_article`;
@@ -176,6 +152,30 @@ CREATE INDEX IF NOT EXISTS idx_info_type
 -- * OpenAI/DeepMind/HuggingFace/量子位 RSS 正文空，改用 web 采集
 -- * 恒生电子 JS空壳，替换为零壹财经
 -- ============================================================
+
+-- ----------------------------
+-- 数据源表
+-- ----------------------------
+DROP TABLE IF EXISTS `ai_radar_source`;
+CREATE TABLE `ai_radar_source` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `code` varchar(64) NOT NULL COMMENT '数据源唯一编码',
+  `name` varchar(128) NOT NULL COMMENT '数据源名称',
+  `type` varchar(32) NOT NULL COMMENT '数据源类型(academic/vendor_blog/tech_media/tech_community/industry_application)',
+  `category` varchar(64) NOT NULL COMMENT '内容分类(大模型基础技术/Agent与智能体/多模态技术/AI基础设施/生成式AI应用/安全与伦理/开源生态/行业动态/AI在金融领域应用)',
+  `access_url` varchar(256) NOT NULL COMMENT '采集地址',
+  `domain` varchar(128) NOT NULL COMMENT '域名白名单',
+  `fetch_method` varchar(16) NOT NULL DEFAULT 'rss' COMMENT '采集方式(rss/html)',
+  `enabled` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否启用',
+  `last_collect_time` datetime DEFAULT NULL COMMENT '最后采集时间',
+  `last_collect_status` varchar(16) DEFAULT NULL COMMENT '最后采集状态(success/failed)',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_code` (`code`),
+  KEY `idx_category` (`category`),
+  KEY `idx_enabled` (`enabled`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据源配置表';
 
 INSERT INTO ai_radar_source (code, name, type, category, access_url, domain, fetch_method, enabled) VALUES
 
