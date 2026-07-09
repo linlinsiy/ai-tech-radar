@@ -249,7 +249,7 @@ INSERT INTO ai_radar_source (code, name, type, category, access_url, domain, fet
 -- 十、金融应用（2个）
 -- ============================================================================
 ('10jqka-news',             '同花顺金融AI',                 'industry_application', '金融应用',  'https://news.10jqka.com.cn/',                             'news.10jqka.com.cn',          'web',  1),
-('01caijing-fintech',       '零壹财经金融科技',             'industry_application', '金融应用',  'https://www.01caijing.com/',                      'www.01caijing.com',           'web',  1);
+('01caijing-home',       '零壹财经金融科技',             'industry_application', '金融应用',  'https://www.01caijing.com/',                      'www.01caijing.com',           'web',  1);
 
 
 ALTER TABLE ai_radar_import_batch ADD COLUMN `task_type` varchar(32) DEFAULT 'manual' COMMENT '任务类型' AFTER `scope`;
