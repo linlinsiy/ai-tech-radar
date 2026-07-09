@@ -238,7 +238,7 @@ INSERT INTO ai_radar_source (code, name, type, category, access_url, domain, fet
 -- ============================================================================
 -- 九、行业动态（中文源）（6个）
 -- ============================================================================
-('qbitai',                  '量子位',                      'tech_media',   '行业动态',        'https://www.qbitai.com/feed',                             'www.qbitai.com',              'web',  1),
+('qbitai',                  '量子位',                      'tech_media',   '行业动态',        'https://www.qbitai.com/ai',                               'www.qbitai.com',              'web',  1),
 ('36kr-ai',                 '36氪AI频道',                  'tech_media',   '行业动态',        'https://36kr.com/information/AI/',                        '36kr.com',                    'web',  1),
 ('tmtpost',                 '钛媒体',                      'tech_media',   '行业动态',        'https://www.tmtpost.com/feed',                            'www.tmtpost.com',             'rss',  1),
 ('infoq-cn',                'InfoQ中文',                   'tech_media',   '行业动态',        'https://www.infoq.cn/feed',                               'www.infoq.cn',                'rss',  1),
@@ -250,3 +250,6 @@ INSERT INTO ai_radar_source (code, name, type, category, access_url, domain, fet
 -- ============================================================================
 ('10jqka-news',             '同花顺财经要闻',               'industry_application', '金融应用',  'https://news.10jqka.com.cn/',                             'news.10jqka.com.cn',          'web',  1),
 ('eastmoney-ai',            '东方财富财经',                 'industry_application', '金融应用',  'https://www.eastmoney.com/',                              'www.eastmoney.com',           'web',  1);
+
+
+ALTER TABLE ai_radar_import_batch ADD COLUMN `task_type` varchar(32) DEFAULT 'manual' COMMENT '任务类型' AFTER `scope`;
