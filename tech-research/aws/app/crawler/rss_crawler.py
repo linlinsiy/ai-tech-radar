@@ -7,15 +7,40 @@ L0 RSS 采集器
 import logging
 import feedparser
 import time
+import requests
 from typing import List, Dict, Optional
 from datetime import datetime
 from email.utils import parsedate_to_datetime
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
+from bs4 import BeautifulSoup
 
 from crawler.base import BaseCrawler, RawArticle
 
 from logging_config import get_logger
 logger = get_logger("crawler.rss")
+
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+
+RSS_REQUEST_HEADERS = {
+    "User-Agent": BROWSER_USER_AGENT,
+    "Accept": (
+        "application/rss+xml, application/atom+xml, application/xml, "
+        "text/xml, text/html;q=0.8, */*;q=0.5"
+    ),
+}
+
+ALLOWED_CONTENT_TYPES = (
+    "application/rss+xml",
+    "application/atom+xml",
+    "application/xml",
+    "text/xml",
+    "application/rdf+xml",
+    "text/html",
+)
 
 
 class RSSCrawler(BaseCrawler):
@@ -38,8 +63,106 @@ class RSSCrawler(BaseCrawler):
             source: 数据源配置字典
         """
         super().__init__(source)
-        self.timeout = 30
+        self.timeout = 20
         self.max_articles = 100
+
+    def _request_feed(self, url: str):
+        """请求 RSS URL，统一设置浏览器 UA、超时和重定向。"""
+        return requests.get(
+            url,
+            timeout=self.timeout,
+            headers=RSS_REQUEST_HEADERS,
+            allow_redirects=True,
+        )
+
+    @staticmethod
+    def _is_allowed_content_type(content_type: str) -> bool:
+        """判断响应是否为可尝试解析的 RSS/Atom/XML/HTML 内容。"""
+        normalized = (content_type or "").split(";")[0].strip().lower()
+        return not normalized or normalized in ALLOWED_CONTENT_TYPES
+
+    @staticmethod
+    def _extract_feed_from_html(html: str, base_url: str) -> Optional[str]:
+        """
+        从 HTML 中提取 RSS 内容。
+
+        支持两类情况：
+        1. HTML 页面中直接嵌入了 RSS/Atom XML 片段；
+        2. HTML 通过 <link rel="alternate" type="application/rss+xml"> 指向真实 feed。
+        """
+        if not html:
+            return None
+
+        lowered = html.lower()
+        starts = [
+            lowered.find("<?xml"),
+            lowered.find("<rss"),
+            lowered.find("<feed"),
+        ]
+        starts = [idx for idx in starts if idx >= 0]
+        if starts:
+            return html[min(starts):]
+
+        soup = BeautifulSoup(html, "html.parser")
+        for link in soup.find_all("link"):
+            rel = " ".join(link.get("rel", [])).lower()
+            link_type = (link.get("type") or "").lower()
+            href = link.get("href")
+            if not href:
+                continue
+            if "alternate" in rel and (
+                "rss" in link_type or "atom" in link_type or "xml" in link_type
+            ):
+                return urljoin(base_url, href)
+        return None
+
+    @staticmethod
+    def _parse_feed(content: str, response_headers: Optional[Dict[str, str]] = None):
+        """使用 feedparser 容错解析；兼容旧 feedparser 版本的参数差异。"""
+        try:
+            return feedparser.parse(
+                content,
+                response_headers=response_headers or {},
+                reject_unsafe_xml=False,
+                resolve_entities=False,
+            )
+        except TypeError:
+            logger.debug("当前 feedparser 版本不支持 reject_unsafe_xml/resolve_entities，使用兼容解析")
+            return feedparser.parse(content, response_headers=response_headers or {})
+
+    def _load_feed(self):
+        """下载并解析 RSS/Atom 内容，兼容 text/html 中的 feed 链接或嵌入内容。"""
+        resp = self._request_feed(self.access_url)
+        resp.raise_for_status()
+
+        content_type = resp.headers.get("Content-Type", "")
+        if not self._is_allowed_content_type(content_type):
+            logger.warning(
+                "[%s] Content-Type 不在允许范围，仍尝试解析: %s",
+                self.source_code,
+                content_type or "unknown",
+            )
+
+        normalized_type = content_type.split(";")[0].strip().lower()
+        content = resp.text
+        feed_url = resp.url
+
+        if normalized_type == "text/html":
+            extracted = self._extract_feed_from_html(content, resp.url)
+            if extracted and extracted.startswith(("http://", "https://")):
+                logger.info("[%s] HTML 中发现 RSS 链接: %s", self.source_code, extracted)
+                feed_resp = self._request_feed(extracted)
+                feed_resp.raise_for_status()
+                content = feed_resp.text
+                feed_url = feed_resp.url
+                content_type = feed_resp.headers.get("Content-Type", content_type)
+            elif extracted:
+                logger.info("[%s] HTML 中发现内嵌 RSS/Atom 内容", self.source_code)
+                content = extracted
+            else:
+                logger.warning("[%s] text/html 响应中未发现 RSS/Atom 内容", self.source_code)
+
+        return self._parse_feed(content, response_headers={"content-location": feed_url})
 
     def fetch(self) -> List[RawArticle]:
         """
@@ -54,7 +177,13 @@ class RSSCrawler(BaseCrawler):
         logger.info("[%s] 开始 RSS 采集: %s", self.source_code, self.access_url)
 
         try:
-            feed = feedparser.parse(self.access_url)
+            feed = self._load_feed()
+        except requests.Timeout:
+            logger.error("[%s] RSS 请求超时: timeout=%ss", self.source_code, self.timeout)
+            return []
+        except requests.RequestException as e:
+            logger.error("[%s] RSS 请求失败: %s", self.source_code, str(e))
+            return []
         except Exception as e:
             logger.error("[%s] RSS 解析失败: %s", self.source_code, str(e))
             return []

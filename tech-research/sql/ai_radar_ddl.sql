@@ -1,231 +1,156 @@
-﻿-- ============================================================
--- AI技术趋势雷达 - 内部业务数据库 DDL
--- 数据库：ysdjg（10.102.37.253:8880）
--- 表数量：7
--- 生成日期：2026-06-12
--- ============================================================
--- 部署说明：
---   本 DDL 是参考脚本，记录完整表结构定义。
---   实际部署位置：ysdjg 库（10.102.37.253:8880）
---   表名前缀 ai_radar_ 保证在共享 ysdjg 库中命名空间隔离。
---   执行时去掉 CREATE DATABASE / USE 语句，直接在 ysdjg 库中建表。
--- ============================================================
+﻿-- AI技术趋势雷达数据库表结构
+-- 版本: 2026-07-09
+-- 修改说明: 新增数据源分类字段category，适配9大分类要求，优化索引结构
 
+SET NAMES utf8mb4;
+SET FOREIGN_KEY_CHECKS = 0;
 
--- ============================================================
--- 1. ai_radar_source - 数据源主数据
--- 记录外部资讯来源，用于追溯文章来源和统计数据源质量
--- ============================================================
-DROP TABLE IF EXISTS ai_radar_source;
-CREATE TABLE ai_radar_source (
-  id            BIGINT          NOT NULL AUTO_INCREMENT  COMMENT '主键',
-  source_code   VARCHAR(64)     NOT NULL                 COMMENT '数据源编码，唯一标识，如 aws-ml-blog、arxiv-cs-ai',
-  source_name   VARCHAR(128)    NOT NULL                 COMMENT '数据源名称，如 AWS ML Blog',
-  source_type   VARCHAR(64)                             COMMENT '数据源分类：tech_media / vendor_blog / academic / tech_community / research_institute',
-  access_url    VARCHAR(512)                            COMMENT 'RSS / API / 网页地址',
-  domain        VARCHAR(128)                            COMMENT '访问域名',
-  enabled       TINYINT         NOT NULL DEFAULT 1       COMMENT '是否启用：1=启用，0=停用',
-  created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  PRIMARY KEY (id),
-  UNIQUE INDEX uk_source_code (source_code)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据源主数据';
+-- ----------------------------
+-- 数据源表
+-- ----------------------------
+DROP TABLE IF EXISTS `ai_radar_source`;
+CREATE TABLE `ai_radar_source` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `code` varchar(64) NOT NULL COMMENT '数据源唯一编码',
+  `name` varchar(128) NOT NULL COMMENT '数据源名称',
+  `type` varchar(32) NOT NULL COMMENT '数据源类型(academic/vendor_blog/tech_media/tech_community/industry_application)',
+  `category` varchar(64) NOT NULL COMMENT '内容分类(大模型基础技术/Agent与智能体/多模态技术/AI基础设施/生成式AI应用/安全与伦理/开源生态/行业动态/AI在金融领域应用)',
+  `access_url` varchar(256) NOT NULL COMMENT '采集地址',
+  `domain` varchar(128) NOT NULL COMMENT '域名白名单',
+  `fetch_method` varchar(16) NOT NULL DEFAULT 'rss' COMMENT '采集方式(rss/html)',
+  `enabled` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否启用',
+  `last_collect_time` datetime DEFAULT NULL COMMENT '最后采集时间',
+  `last_collect_status` varchar(16) DEFAULT NULL COMMENT '最后采集状态(success/failed)',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_code` (`code`),
+  KEY `idx_category` (`category`),
+  KEY `idx_enabled` (`enabled`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据源配置表';
 
--- ============================================================
--- 2. ai_radar_import_batch - 导入批次
--- 记录每次从亚马逊云侧导入内部的数据批次，用于追溯和排障
--- 注：先于 article 表创建，因 article 依赖其外键
--- ============================================================
-DROP TABLE IF EXISTS ai_radar_import_batch;
-CREATE TABLE ai_radar_import_batch (
-  id              BIGINT          NOT NULL AUTO_INCREMENT  COMMENT '主键',
-  batch_no        VARCHAR(64)     NOT NULL                 COMMENT '批次号，唯一，如 IMP-20260612-001',
-  task_type       VARCHAR(64)                             COMMENT '任务类型：scheduled / manual_backfill / rerun',
-  source_scope    VARCHAR(512)                            COMMENT '本次涉及数据源列表，JSON 数组格式',
-  article_count   INT             NOT NULL DEFAULT 0       COMMENT '导入文章数量',
-  success_count   INT             NOT NULL DEFAULT 0       COMMENT '成功导入数量',
-  failed_count    INT             NOT NULL DEFAULT 0       COMMENT '失败数量',
-  import_status   VARCHAR(32)     NOT NULL DEFAULT 'pending' COMMENT '导入状态：pending / success / partial_success / failed',
-  error_summary   TEXT                                    COMMENT '错误摘要',
-  created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  PRIMARY KEY (id),
-  UNIQUE INDEX uk_batch_no (batch_no),
-  INDEX idx_created_at (created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='导入批次';
+-- ----------------------------
+-- 文章原始数据表
+-- ----------------------------
+DROP TABLE IF EXISTS `ai_radar_article`;
+CREATE TABLE `ai_radar_article` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `source_code` varchar(64) NOT NULL COMMENT '来源数据源code',
+  `category` varchar(64) NOT NULL COMMENT '内容分类',
+  `title` varchar(512) NOT NULL COMMENT '文章标题',
+  `url` varchar(1024) NOT NULL COMMENT '原文链接',
+  `pub_time` datetime DEFAULT NULL COMMENT '发布时间',
+  `author` varchar(128) DEFAULT NULL COMMENT '作者',
+  `content` longtext COMMENT '原始正文内容',
+  `content_hash` varchar(64) NOT NULL COMMENT '内容哈希(去重用)',
+  `status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT '处理状态(pending/analyzed/failed)',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_url` (`url`(255)),
+  UNIQUE KEY `uk_content_hash` (`content_hash`),
+  KEY `idx_source_code` (`source_code`),
+  KEY `idx_category` (`category`),
+  KEY `idx_pub_time` (`pub_time`),
+  KEY `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文章原始数据表';
 
--- ============================================================
--- 3. ai_radar_article - 外部文章基础信息
--- 记录采集到的外部文章基础信息，幂等去重依赖 url_hash 和 content_hash
--- ============================================================
-DROP TABLE IF EXISTS ai_radar_article;
-CREATE TABLE ai_radar_article (
-  id              BIGINT          NOT NULL AUTO_INCREMENT  COMMENT '主键',
-  source_id       BIGINT          NOT NULL                 COMMENT '来源 ID，关联 ai_radar_source.id',
-  title           VARCHAR(512)    NOT NULL                 COMMENT '原始标题',
-  url             VARCHAR(1024)   NOT NULL                 COMMENT '原文链接',
-  url_hash        CHAR(64)        NOT NULL                 COMMENT 'URL SHA-256 哈希，用于去重',
-  author          VARCHAR(128)                             COMMENT '作者',
-  publish_time    DATETIME                                COMMENT '原文发布时间',
-  crawl_time      DATETIME                                COMMENT '抓取时间',
-  raw_summary     TEXT                                    COMMENT '原文摘要或 RSS 自带摘要',
-  full_content    LONGTEXT        NULL                    COMMENT '文章完整原文，仅对触发 L3 深度分析的文章填充',
-  content_hash    CHAR(64)                                COMMENT '内容 SHA-256 指纹，用于内容级去重',
-  import_batch_id BIGINT          NOT NULL                 COMMENT '导入批次 ID，关联 ai_radar_import_batch.id',
-  created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  PRIMARY KEY (id),
-  UNIQUE INDEX uk_url_hash (url_hash),
-  INDEX idx_source_id (source_id),
-  INDEX idx_import_batch_id (import_batch_id),
-  INDEX idx_publish_time (publish_time),
-  INDEX idx_content_hash (content_hash)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='外部文章基础信息';
+-- ----------------------------
+-- 文章L2分析结果表
+-- ----------------------------
+DROP TABLE IF EXISTS `ai_radar_article_analysis`;
+CREATE TABLE `ai_radar_article_analysis` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `article_id` bigint unsigned NOT NULL COMMENT '关联文章ID',
+  `summary` text NOT NULL COMMENT '摘要内容',
+  `keywords` varchar(512) DEFAULT NULL COMMENT '关键词列表(逗号分隔)',
+  `value_score` decimal(3,1) NOT NULL COMMENT '价值评分0-10',
+  `tags` varchar(512) DEFAULT NULL COMMENT '标签列表(逗号分隔)',
+  `category` varchar(64) NOT NULL COMMENT '自动分类结果',
+  `model` varchar(64) NOT NULL COMMENT '使用模型',
+  `tokens_used` int NOT NULL DEFAULT '0' COMMENT '消耗token数',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_article_id` (`article_id`),
+  KEY `idx_value_score` (`value_score`),
+  KEY `idx_category` (`category`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文章L2分析结果表';
 
--- ============================================================
--- 4. ai_radar_article_analysis - 文章分析结果
--- 记录模型生成的摘要、分类、标签、评分等结构化分析结果
--- ============================================================
-DROP TABLE IF EXISTS ai_radar_article_analysis;
-CREATE TABLE ai_radar_article_analysis (
-  id                  BIGINT          NOT NULL AUTO_INCREMENT  COMMENT '主键',
-  article_id          BIGINT          NOT NULL                 COMMENT '文章 ID，关联 ai_radar_article.id',
-  summary_cn          TEXT            NOT NULL                 COMMENT '中文摘要，150-300 字',
-  category            VARCHAR(128)                            COMMENT '资讯一级分类：大模型基础技术 / Agent与智能体 / 多模态技术 / AI基础设施 / 生成式AI应用 / 安全与伦理 / 开源生态 / 行业动态 / AI在金融领域应用 / 其他AI相关',
-  sub_category        VARCHAR(128)                            COMMENT '资讯子分类，用于简报章节内细分',
-  info_type           VARCHAR(64)                             COMMENT '资讯类型：技术方案 / 模型发布 / 产品发布 / 开源项目 / 研究论文 / 工程实践 / 行业动态 / 投融资并购 / 政策监管 / 观点分析 / 案例实践 / 其他',
-  briefing_focus      TEXT                                    COMMENT '简报表达重点',
-  analysis_detail     JSON                                    COMMENT '按资讯类型存放的结构化分析详情',
-  keywords            VARCHAR(512)                            COMMENT '关键词，逗号分隔，3-5 个',
-  tech_tags           JSON                                    COMMENT '技术标签数组，如 ["LLM Inference", "FlashAttention"]',
-  companies           JSON                                    COMMENT '涉及厂商数组，如 ["NVIDIA", "Meta"]',
-  score_tech_depth    DECIMAL(3,1)                            COMMENT '技术深度评分，1.0-10.0',
-  score_engineering   DECIMAL(3,1)                            COMMENT '工程参考价值评分，1.0-10.0',
-  score_trend         DECIMAL(3,1)                            COMMENT '趋势重要性评分，1.0-10.0',
-  score_credibility   DECIMAL(3,1)                            COMMENT '来源可信度评分，1.0-10.0',
-  score_timeliness    DECIMAL(3,1)                            COMMENT '时效性评分，1.0-10.0',
-  value_score         DECIMAL(4,2)                            COMMENT '综合价值评分，五项维度平均值',
-  model_name          VARCHAR(128)                            COMMENT '调用模型，如 gpt-4o-mini / gpt-4o',
-  prompt_version      VARCHAR(64)                             COMMENT 'Prompt 版本，如 v2.1',
-  analysis_status     VARCHAR(32)     NOT NULL DEFAULT 'success' COMMENT '分析状态：success / failed',
-  created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  PRIMARY KEY (id),
-  INDEX idx_article_id (article_id),
-  INDEX idx_category (category),
-  INDEX idx_category_sub_category (category, sub_category),
-  INDEX idx_info_type (info_type),
-  INDEX idx_value_score (value_score),
-  INDEX idx_prompt_version (prompt_version)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文章分析结果';
+-- ----------------------------
+-- 深度洞察结果表
+-- ----------------------------
+DROP TABLE IF EXISTS `ai_radar_deep_insight`;
+CREATE TABLE `ai_radar_deep_insight` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `article_id` bigint unsigned NOT NULL COMMENT '关联文章ID',
+  `content` longtext NOT NULL COMMENT '深度分析内容',
+  `key_findings` text COMMENT '核心发现',
+  `technical_points` text COMMENT '技术要点',
+  `business_value` text COMMENT '业务价值',
+  `model` varchar(64) NOT NULL COMMENT '使用模型',
+  `tokens_used` int NOT NULL DEFAULT '0' COMMENT '消耗token数',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_article_id` (`article_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='深度洞察结果表';
 
--- ============================================================
--- 5. ai_radar_deep_insight - 深度洞察
--- 仅对高价值文章（value_score >= 8 且有 full_content）生成
--- 用于入知识库和简报复用
--- ============================================================
-DROP TABLE IF EXISTS ai_radar_deep_insight;
-CREATE TABLE ai_radar_deep_insight (
-  id                  BIGINT          NOT NULL AUTO_INCREMENT  COMMENT '主键',
-  article_id          BIGINT          NOT NULL                 COMMENT '文章 ID，关联 ai_radar_article.id',
-  technical_background TEXT          NOT NULL                  COMMENT '技术背景：领域背景知识、前置技术、发展脉络',
-  core_problem        TEXT            NOT NULL                 COMMENT '核心问题：文章试图解决的具体问题或挑战',
-  technical_solution  TEXT            NOT NULL                 COMMENT '技术方案：核心思路、关键技术决策、实现方法',
-  impact_analysis     TEXT                                    COMMENT '影响分析：可能带来的行业影响、技术栈变化',
-  reference_value     TEXT                                    COMMENT '内部参考价值：对公司技术团队的参考意义和可借鉴之处',
-  model_name          VARCHAR(128)                            COMMENT '调用模型，如 gpt-4o',
-  prompt_version      VARCHAR(64)                             COMMENT 'Prompt 版本，如 v2.1',
-  analysis_status     VARCHAR(32)     NOT NULL DEFAULT 'success' COMMENT '分析状态：success / failed',
-  created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  PRIMARY KEY (id),
-  INDEX idx_article_id (article_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='深度洞察';
+-- ----------------------------
+-- 采集批次表
+-- ----------------------------
+DROP TABLE IF EXISTS `ai_radar_import_batch`;
+CREATE TABLE `ai_radar_import_batch` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `batch_no` varchar(32) NOT NULL COMMENT '批次号',
+  `scope` varchar(32) NOT NULL COMMENT '采集范围(all/sources)',
+  `article_count` int NOT NULL DEFAULT '0' COMMENT '采集文章数',
+  `analysis_count` int NOT NULL DEFAULT '0' COMMENT '完成分析数',
+  `insight_count` int NOT NULL DEFAULT '0' COMMENT '生成深度洞察数',
+  `status` varchar(16) NOT NULL DEFAULT 'running' COMMENT '批次状态(running/success/failed)',
+  `error_msg` text COMMENT '错误信息',
+  `start_time` datetime NOT NULL COMMENT '开始时间',
+  `end_time` datetime DEFAULT NULL COMMENT '结束时间',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_batch_no` (`batch_no`),
+  KEY `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='采集批次表';
 
--- ============================================================
--- 6. ai_radar_briefing_draft - 简报草稿
--- 保存系统生成的周报、月报、专题报告草稿元数据
--- 正文仅存入 EIPLite 知识库，MySQL 不存储正文
--- ============================================================
-DROP TABLE IF EXISTS ai_radar_briefing_draft;
-CREATE TABLE ai_radar_briefing_draft (
-  id                  BIGINT          NOT NULL AUTO_INCREMENT  COMMENT '主键',
-  briefing_type       VARCHAR(32)     NOT NULL                 COMMENT '简报类型：weekly / monthly / topic',
-  title               VARCHAR(256)    NOT NULL                 COMMENT '简报标题',
-  time_range_start    DATE                                    COMMENT '覆盖时间开始',
-  time_range_end      DATE                                    COMMENT '覆盖时间结束',
-  related_article_ids JSON                                    COMMENT '关联文章 ID 列表',
-  related_insight_ids JSON                                    COMMENT '关联洞察 ID 列表',
-  review_status       VARCHAR(32)     NOT NULL DEFAULT 'pending' COMMENT '审核状态：pending / reviewed',
-  created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  updated_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  PRIMARY KEY (id),
-  INDEX idx_briefing_type (briefing_type),
-  INDEX idx_time_range_start (time_range_start)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='简报草稿';
+-- ----------------------------
+-- 简报草稿表
+-- ----------------------------
+DROP TABLE IF EXISTS `ai_radar_briefing_draft`;
+CREATE TABLE `ai_radar_briefing_draft` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `briefing_type` varchar(32) NOT NULL COMMENT '简报类型(daily/weekly/monthly)',
+  `title` varchar(256) NOT NULL COMMENT '简报标题',
+  `time_range_start` date DEFAULT NULL COMMENT '时间范围-开始',
+  `time_range_end` date DEFAULT NULL COMMENT '时间范围-结束',
+  `related_article_ids` longtext COMMENT '关联文章ID列表(JSON数组)',
+  `related_insight_ids` longtext COMMENT '关联洞察ID列表(JSON数组)',
+  `content` longtext NOT NULL COMMENT '简报内容',
+  `review_status` varchar(32) NOT NULL DEFAULT 'pending' COMMENT '审核状态(pending/passed/rejected)',
+  `reviewer` varchar(64) DEFAULT NULL COMMENT '审核人',
+  `review_time` datetime DEFAULT NULL COMMENT '审核时间',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_briefing_type` (`briefing_type`),
+  KEY `idx_time_range` (`time_range_start`, `time_range_end`),
+  KEY `idx_review_status` (`review_status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='简报草稿表';
 
--- ============================================================
--- 7. ai_radar_kb_mapping - 知识库文件映射
--- 记录 MySQL 业务记录与 EIPLite 知识库文件的对应关系
--- 用于排障、溯源和重新入库
--- ============================================================
-DROP TABLE IF EXISTS ai_radar_kb_mapping;
-CREATE TABLE ai_radar_kb_mapping (
-  id              BIGINT          NOT NULL AUTO_INCREMENT  COMMENT '主键',
-  kb_type         VARCHAR(32)     NOT NULL                 COMMENT '入库内容类型：article_summary / deep_insight / briefing',
-  kb_file_id      VARCHAR(128)    NOT NULL                 COMMENT 'EIPLite 知识库返回的文件 ID',
-  article_id      BIGINT          NULL                    COMMENT '关联 ai_radar_article.id（kb_type=article_summary 或 deep_insight 时填充）',
-  analysis_id     BIGINT          NULL                    COMMENT '关联 ai_radar_article_analysis.id（kb_type=article_summary 时填充）',
-  insight_id      BIGINT          NULL                    COMMENT '关联 ai_radar_deep_insight.id（kb_type=deep_insight 时填充）',
-  briefing_id     BIGINT          NULL                    COMMENT '关联 ai_radar_briefing_draft.id（kb_type=briefing 时填充）',
-  kb_status       VARCHAR(32)     NOT NULL DEFAULT 'success' COMMENT '入库状态：success / failed / updating',
-  error_message   TEXT                                    COMMENT '入库失败原因',
-  tags            JSON            NULL                                COMMENT '标签键值对',
-  created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  PRIMARY KEY (id),
-  UNIQUE INDEX uk_kb_type_file_id (kb_type, kb_file_id),
-  INDEX idx_article_id (article_id),
-  INDEX idx_insight_id (insight_id),
-  INDEX idx_briefing_id (briefing_id),
-  INDEX idx_kb_status (kb_status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库文件映射';
-
-ALTER TABLE ai_radar_briefing_draft ADD COLUMN content TEXT COMMENT '简报正文';
-
--- ============================================================
--- 初始化数据：12 个首期数据源
--- ============================================================
-INSERT INTO ai_radar_source (source_code, source_name, source_type, access_url, domain, enabled) VALUES
--- 精简优化版 · 20个源 (2026-07-07)
-
--- 学术前沿（3源）
-('arxiv-cs-ai',     'arXiv cs.AI',          'academic',            'http://export.arxiv.org/rss/cs.AI',                                                   'export.arxiv.org',          1),
-('arxiv-q-fin',     'arXiv q-fin',          'academic',            'http://export.arxiv.org/rss/q-fin',                                                   'export.arxiv.org',          1),
-('bair',            'BAIR (伯克利AI)',       'academic',            'http://bair.berkeley.edu/blog/feed.xml',                                              'bair.berkeley.edu',         1),
-
--- 大厂R&D（6源）
-('deepmind',        'DeepMind Blog',        'vendor_blog',         'https://deepmind.com/blog/feed/basic/',                                              'deepmind.com',              1),
-('openai-blog',     'OpenAI Blog',          'vendor_blog',         'https://rsshub.app/openai/blog',                                                      'rsshub.app',                1),
-('google-research', 'Google Research',      'vendor_blog',         'http://googleresearch.blogspot.com/atom.xml',                                         'googleresearch.blogspot.com', 1),
-('meta-eng',        'Meta Engineering',     'vendor_blog',         'https://engineering.fb.com/feed/',                                                    'engineering.fb.com',        1),
-('anthropic',       'Anthropic Research',   'vendor_blog',         'https://rsshub.app/anthropic/blog',                                                   'rsshub.app',                1),
-('aws-ml-blog',     'AWS ML Blog',          'vendor_blog',         'https://aws.amazon.com/blogs/machine-learning/feed/',                                 'aws.amazon.com',            1),
-
--- 工程实践（2源）
-('langchain',       'LangChain Blog',       'vendor_blog',         'https://blog.langchain.dev/rss/',                                                     'blog.langchain.dev',        1),
-('huggingface',     'HuggingFace Blog',     'vendor_blog',         'https://huggingface.co/blog/feed.xml',                                                'huggingface.co',            1),
-
--- 中文解读（5源）
-('jiqizhixin',      '机器之心',              'tech_media',          'https://www.jiqizhixin.com/rss',                                                      'www.jiqizhixin.com',        1),
-('liangziwei',      '量子位',               'tech_media',          'https://www.qbitai.com/feed',                                                         'www.qbitai.com',            1),
-('xin-zhi-yuan',    '新智元',               'tech_media',          'https://wechat2rss.bestblogs.dev/feed/e531a18b21c34cf787b83ab444eef659d7a980de.xml', 'wechat2rss.bestblogs.dev',   1),
-('infoq-ai-ml',     'InfoQ AI/ML',          'tech_media',          'https://feed.infoq.com/ai-ml-data-eng/news',                                          'feed.infoq.com',            1),
-('tencent-research','腾讯研究院',            'research_institute',  'https://wechat2rss.bestblogs.dev/feed/6152301e0978bffb0a8284cab339262b9764dcfb.xml', 'wechat2rss.bestblogs.dev',   1),
-
--- 周度提炼（2源）
-('last-week-in-ai', 'Last Week in AI',      'tech_media',          'https://lastweekin.ai/feed/',                                                         'lastweekin.ai',             1),
-('the-batch',       'The Batch (吴恩达)',    'tech_media',          'https://rsshub.bestblogs.dev/deeplearning/thebatch',                                   'rsshub.bestblogs.dev',      1),
-
--- 社区信号（1源）
-('hackernews',      'Hacker News',          'tech_community',      'https://hnrss.org/frontpage?description=full&q=AI+OR+LLM',                            'hnrss.org',                 1),
-
--- 学术前沿补充（1源）
-('arxiv-cs-ce',     'arXiv cs.CE（计算工程）','academic',            'http://export.arxiv.org/rss/cs.CE',                                                   'export.arxiv.org',          1);
+-- ----------------------------
+-- 知识库映射表
+-- ----------------------------
+DROP TABLE IF EXISTS `ai_radar_kb_mapping`;
+CREATE TABLE `ai_radar_kb_mapping` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `article_id` bigint unsigned NOT NULL COMMENT '关联文章ID',
+  `kb_id` varchar(64) NOT NULL COMMENT '知识库ID',
+  `sync_status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT '同步状态(pending/success/failed)',
+  `sync_time` datetime DEFAULT NULL COMMENT '同步时间',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_article_kb` (`article_id`, `kb_id`),
+  KEY `idx_sync_status` (`sync_status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库映射表';

@@ -14,6 +14,90 @@
 
 XXL-Job Admin 地址：`http://168.64.38.162:8080/xxl-job-admin/api/`
 
+### 1.1 服务后台启动方式
+
+推荐使用 `systemd` 后台运行，具备开机自启、异常自动重启、统一状态查看能力。启动顺序建议为：**先启动内部侧，再启动 AWS 侧**。
+
+#### 1.1.1 内部侧服务（internal）
+
+首次部署或依赖变更后，先执行安装脚本：
+
+```bash
+cd /app/001804/internal
+chmod +x deploy/install.sh deploy/start.sh
+./deploy/install.sh
+```
+
+注册并启动 systemd 服务：
+
+```bash
+sudo cp /app/001804/internal/deploy/ai-radar-internal.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable ai-radar-internal
+sudo systemctl start ai-radar-internal
+```
+
+常用运维命令：
+
+```bash
+sudo systemctl status ai-radar-internal
+sudo systemctl restart ai-radar-internal
+journalctl -u ai-radar-internal -f
+curl http://127.0.0.1:9001/health
+```
+
+#### 1.1.2 AWS 侧服务（aws）
+
+首次部署或依赖变更后，先执行安装脚本：
+
+```bash
+cd /app/001804/aws
+chmod +x deploy/install.sh deploy/start.sh
+./deploy/install.sh
+```
+
+注册并启动 systemd 服务：
+
+```bash
+sudo cp /app/001804/aws/deploy/ai-radar-aws.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable ai-radar-aws
+sudo systemctl start ai-radar-aws
+```
+
+常用运维命令：
+
+```bash
+sudo systemctl status ai-radar-aws
+sudo systemctl restart ai-radar-aws
+journalctl -u ai-radar-aws -f
+curl http://127.0.0.1:9003/health
+```
+
+#### 1.1.3 临时后台启动方式
+
+如果当前服务器暂不方便注册 systemd，可使用 `nohup` 临时后台启动：
+
+```bash
+cd /app/001804/internal
+mkdir -p logs
+nohup ./deploy/start.sh > logs/nohup.log 2>&1 &
+
+cd /app/001804/aws
+mkdir -p logs
+nohup ./deploy/start.sh > logs/nohup.log 2>&1 &
+```
+
+查看进程和日志：
+
+```bash
+ps -ef | grep "uvicorn app.main:app" | grep -v grep
+tail -f /app/001804/internal/logs/nohup.log
+tail -f /app/001804/aws/logs/nohup.log
+```
+
+临时方式不会自动开机启动，也不具备 systemd 的自动拉起能力，仅建议用于验证或临时排障。
+
 ---
 
 ## 二、AWS侧接口
@@ -167,6 +251,20 @@ $body = @{ scope = "all"; sources = "xin-zhi-yuan,aws-ml-blog"; from_date = "202
 Invoke-RestMethod -Method Post -Uri "http://localhost:9003/api/v1/jobs/collect" -Body $body -ContentType "application/json" | ConvertTo-Json -Depth 5
 ```
 
+- **Linux curl 示例**
+
+```bash
+# 全量采集
+curl -sS -X POST 'http://127.0.0.1:9003/api/v1/jobs/collect' \
+  -H 'Content-Type: application/json' \
+  -d '{"scope":"all","task_type":"manual_backfill"}' | python3 -m json.tool
+
+# 指定源 + 时间范围
+curl -sS -X POST 'http://127.0.0.1:9003/api/v1/jobs/collect' \
+  -H 'Content-Type: application/json' \
+  -d '{"scope":"all","sources":"aws-ml-blog,arxiv-cs-ai","from_date":"2026-06-20","to_date":"2026-06-22","task_type":"manual_backfill"}' | python3 -m json.tool
+```
+
 ---
 
 ### 2.5 `POST /api/v1/jobs/health-check` -- 手动触发健康检查（HTTP）
@@ -198,6 +296,13 @@ Invoke-RestMethod -Method Post -Uri "http://localhost:9003/api/v1/jobs/collect" 
 ```powershell
 Invoke-RestMethod -Method Post -Uri "http://localhost:9003/api/v1/jobs/health-check" | ConvertTo-Json -Depth 5
 # 预期 reachable + unreachable 合计 = 12，含各数据源详情
+```
+
+- **Linux curl 示例**
+
+```bash
+curl -sS -X POST 'http://127.0.0.1:9003/api/v1/jobs/health-check' | python3 -m json.tool
+# 预期 reachable + unreachable 合计 = data_sources.count，含各数据源详情
 ```
 
 
@@ -233,6 +338,13 @@ GET http://168.64.18.190:9001/health HTTP/1.1
 
 ```powershell
 Invoke-RestMethod -Uri "http://168.64.18.190:9001/health" | ConvertTo-Json -Depth 5
+# 验证 status 为 healthy，各组件正常
+```
+
+- **Linux curl 示例**
+
+```bash
+curl -sS 'http://168.64.18.190:9001/health' | python3 -m json.tool
 # 验证 status 为 healthy，各组件正常
 ```
 
@@ -377,6 +489,26 @@ Invoke-RestMethod -Method Post -Uri "http://168.64.18.190:9001/api/v1/radar/impo
 # 验证 MySQL ai_radar_import_batch 表中新增一条记录
 ```
 
+- **Linux curl 示例**
+
+```bash
+curl -sS -X POST 'http://168.64.18.190:9001/api/v1/radar/import' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "batch": {
+      "batch_no": "TEST-20260616-001",
+      "task_type": "scheduled",
+      "source_scope": []
+    },
+    "articles": [],
+    "analyses": [],
+    "insights": []
+  }' | python3 -m json.tool
+
+# 预期：返回 code=0，article_count=0，success_count=0
+# 验证 MySQL ai_radar_import_batch 表中新增一条记录
+```
+
 ---
 
 ### 3.3 `POST /api/v1/qa/ask` -- RAG 问答接口
@@ -469,6 +601,32 @@ Invoke-RestMethod -Method Post -Uri "http://168.64.18.190:9001/api/v1/qa/ask" -B
 # 预期：返回 answer 字符串 + sources 数组
 ```
 
+- **Linux curl 示例**
+
+```bash
+# 无鉴权场景（当前 token 未配置）
+curl -sS -X POST 'http://168.64.18.190:9001/api/v1/qa/ask' \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"What is FlashAttention","top_k":3}' | python3 -m json.tool
+
+# 带标签过滤
+curl -sS -X POST 'http://168.64.18.190:9001/api/v1/qa/ask' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "question": "LLM inference optimization",
+    "top_k": 3,
+    "tag_filters": [
+      {"name": "kb_type", "value": "article_summary"}
+    ]
+  }' | python3 -m json.tool
+
+# 如果已配置 QA_API_TOKEN：
+curl -sS -X POST 'http://168.64.18.190:9001/api/v1/qa/ask' \
+  -H "Authorization: Bearer ${QA_API_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"LLM inference optimization","top_k":3}' | python3 -m json.tool
+```
+
 ---
 
 ### 3.4 `GET /api/v1/tasks/{task_id}` -- 任务状态查询
@@ -518,6 +676,13 @@ Invoke-RestMethod -Uri "http://168.64.18.190:9001/api/v1/tasks/TEST-20260616-001
 # 若已通过导入接口创建该批次，返回状态；否则返回 404
 ```
 
+- **Linux curl 示例**
+
+```bash
+curl -sS 'http://168.64.18.190:9001/api/v1/tasks/TEST-20260616-001' | python3 -m json.tool
+# 若已通过导入接口创建该批次，返回状态；否则返回 404
+```
+
 ---
 
 ### 3.5 `GET /api/v1/tasks` -- 任务列表
@@ -553,6 +718,12 @@ GET http://168.64.18.190:9001/api/v1/tasks?limit=10 HTTP/1.1
 Invoke-RestMethod -Uri "http://168.64.18.190:9001/api/v1/tasks?limit=5" | ConvertTo-Json -Depth 5
 ```
 
+- **Linux curl 示例**
+
+```bash
+curl -sS 'http://168.64.18.190:9001/api/v1/tasks?limit=5' | python3 -m json.tool
+```
+
 ---
 
 ### 3.6 `aiRadarBriefingJob` -- 简报生成（XXL-Job）
@@ -575,6 +746,20 @@ Invoke-RestMethod -Uri "http://168.64.18.190:9001/api/v1/tasks?limit=5" | Conver
 2. 手动执行，参数 {"briefing_type": "weekly"}
 3. 检查内部侧日志确认简报生成结果
 4. 验证 MySQL ai_radar_briefing_draft 表中新增记录
+```
+
+- **Linux curl 示例（绕过 XXL-Job，直接触发 HTTP 接口）**
+
+```bash
+# 生成周报
+curl -sS -X POST 'http://168.64.18.190:9001/api/v1/jobs/briefing' \
+  -H 'Content-Type: application/json' \
+  -d '{"briefing_type":"weekly"}' | python3 -m json.tool
+
+# 生成月报
+curl -sS -X POST 'http://168.64.18.190:9001/api/v1/jobs/briefing' \
+  -H 'Content-Type: application/json' \
+  -d '{"briefing_type":"monthly"}' | python3 -m json.tool
 ```
 
 ---
