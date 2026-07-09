@@ -243,13 +243,13 @@ INSERT INTO ai_radar_source (code, name, type, category, access_url, domain, fet
 ('tmtpost',                 '钛媒体',                      'tech_media',   '行业动态',        'https://www.tmtpost.com/feed',                            'www.tmtpost.com',             'rss',  1),
 ('infoq-cn',                'InfoQ中文',                   'tech_media',   '行业动态',        'https://www.infoq.cn/feed',                               'www.infoq.cn',                'rss',  1),
 ('oschina-ai',              '开源中国AI',                  'tech_community','行业动态',       'https://www.oschina.net/news/rss/ai',                     'www.oschina.net',             'rss',  1),
-('tencent-cloud-ai',        '腾讯云AI专栏',                'tech_community','行业动态',       'https://cloud.tencent.com/developer/column/102946',       'cloud.tencent.com',           'web',  1),
+('tencent-cloud-ai',        '腾讯云AI专栏',                'tech_community','AI基础设施',    'https://cloud.tencent.com/developer/column/102946',       'cloud.tencent.com',           'web',  1),
 
 -- ============================================================================
 -- 十、金融应用（2个）
 -- ============================================================================
-('10jqka-news',             '同花顺财经要闻',               'industry_application', '金融应用',  'https://news.10jqka.com.cn/',                             'news.10jqka.com.cn',          'web',  1),
-('eastmoney-ai',            '东方财富财经',                 'industry_application', '金融应用',  'https://www.eastmoney.com/',                              'www.eastmoney.com',           'web',  1);
+('10jqka-news',             '同花顺金融科技',               'industry_application', '金融应用',  'https://www.10jqka.com.cn/fintech/',                      'www.10jqka.com.cn',           'web',  1),
+('eastmoney-ai',            '东方财富财经',                 'industry_application', '金融应用',  'https://finance.eastmoney.com/fintech/',                  'finance.eastmoney.com',       'web',  1);
 
 
 ALTER TABLE ai_radar_import_batch ADD COLUMN `task_type` varchar(32) DEFAULT 'manual' COMMENT '任务类型' AFTER `scope`;
