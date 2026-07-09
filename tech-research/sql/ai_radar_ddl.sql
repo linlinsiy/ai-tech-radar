@@ -154,3 +154,99 @@ CREATE TABLE `ai_radar_kb_mapping` (
   UNIQUE KEY `uk_article_kb` (`article_id`, `kb_id`),
   KEY `idx_sync_status` (`sync_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库映射表';
+
+ALTER TABLE ai_radar_article_analysis
+  ADD COLUMN IF NOT EXISTS sub_category VARCHAR(128) NULL COMMENT '资讯子分类，用于简报章节内细分' AFTER category,
+  ADD COLUMN IF NOT EXISTS info_type VARCHAR(64) NULL COMMENT '资讯类型：技术方案 / 模型发布 / 产品发布 / 开源项目 / 研究论文 / 工程实践 / 行业动态 / 投融资并购 / 政策监管 / 观点分析 / 案例实践 / 其他' AFTER sub_category,
+  ADD COLUMN IF NOT EXISTS briefing_focus TEXT NULL COMMENT '简报表达重点' AFTER info_type,
+  ADD COLUMN IF NOT EXISTS analysis_detail JSON NULL COMMENT '按资讯类型存放的结构化分析详情' AFTER briefing_focus;
+
+CREATE INDEX IF NOT EXISTS idx_category_sub_category
+  ON ai_radar_article_analysis (category, sub_category);
+
+CREATE INDEX IF NOT EXISTS idx_info_type
+  ON ai_radar_article_analysis (info_type);
+
+
+-- ============================================================
+-- AI技术趋势雷达 - 数据源初始化 INSERT（32个全量验证版）
+-- 时间: 2026-07-09 17:10
+-- 表: ai_radar_source
+-- * 所有 URL 均经 curl 200 验证通过
+-- * OpenAI/DeepMind/HuggingFace/量子位 RSS 正文空，改用 web 采集
+-- * 恒生电子 JS空壳，替换为东方财富
+-- ============================================================
+
+INSERT INTO ai_radar_source (code, name, type, category, access_url, domain, fetch_method, enabled) VALUES
+
+-- ============================================================================
+-- 一、大模型基础技术（5个）
+-- ============================================================================
+('google-research',         'Google Research Blog',        'vendor_blog',  '大模型基础技术',  'http://googleresearch.blogspot.com/feeds/posts/default', 'googleresearch.blogspot.com', 'rss',  1),
+('openai-blog',             'OpenAI Blog',                 'vendor_blog',  '大模型基础技术',  'https://openai.com/blog/rss.xml',                        'openai.com',                  'rss',  1),
+('deepmind-blog',           'Google DeepMind Blog',        'vendor_blog',  '大模型基础技术',  'https://deepmind.google/blog/feed/',                      'deepmind.google',             'web',  1),
+('bair-blog',               'BAIR Berkeley AI',            'academic',     '大模型基础技术',  'https://bair.berkeley.edu/blog/feed.xml',                 'bair.berkeley.edu',           'rss',  1),
+('arxiv-cs-cl',             'arXiv cs.CL 计算语言学',       'academic',     '大模型基础技术',  'http://export.arxiv.org/rss/cs.CL',                       'export.arxiv.org',            'rss',  1),
+
+-- ============================================================================
+-- 二、Agent与智能体（3个）
+-- ============================================================================
+('langchain-blog',          'LangChain Blog',              'vendor_blog',  'Agent与智能体',   'https://blog.langchain.dev/rss.xml',                      'blog.langchain.dev',          'rss',  1),
+('meta-eng',                'Meta Engineering Blog',       'vendor_blog',  'Agent与智能体',   'https://engineering.fb.com/feed/',                        'engineering.fb.com',          'rss',  1),
+('aws-ml-blog',             'AWS ML Blog',                 'vendor_blog',  'Agent与智能体',   'https://aws.amazon.com/blogs/machine-learning/feed/',     'aws.amazon.com',              'rss',  1),
+
+-- ============================================================================
+-- 三、多模态技术（3个）
+-- ============================================================================
+('huggingface-blog',        'HuggingFace Blog',            'vendor_blog',  '多模态技术',      'https://huggingface.co/blog/feed.xml',                    'huggingface.co',              'web',  1),
+('roboflow-blog',           'Roboflow CV Blog',            'tech_media',   '多模态技术',      'https://blog.roboflow.com/rss/',                          'blog.roboflow.com',           'rss',  1),
+('pyimagesearch',           'PyImageSearch',               'tech_media',   '多模态技术',      'https://pyimagesearch.com/feed/',                         'pyimagesearch.com',           'rss',  1),
+
+-- ============================================================================
+-- 四、AI基础设施（3个）
+-- ============================================================================
+('nvidia-dev',              'NVIDIA Developer Blog',       'vendor_blog',  'AI基础设施',      'https://developer.nvidia.com/blog/feed/',                 'developer.nvidia.com',        'rss',  1),
+('infoq-en',                'InfoQ AI/ML（英文）',         'tech_media',   'AI基础设施',      'https://feed.infoq.com/ai-ml-data-eng/news',              'feed.infoq.com',              'rss',  1),
+('aliyun-ai-dev',           '阿里云AI开发者社区',           'vendor_blog',  'AI基础设施',      'https://developer.aliyun.com/group/ai',                   'developer.aliyun.com',        'web',  1),
+
+-- ============================================================================
+-- 五、生成式AI应用（2个）
+-- ============================================================================
+('last-week-in-ai',         'Last Week in AI',             'tech_media',   '生成式AI应用',    'https://lastweekin.ai/feed/',                             'lastweekin.ai',               'rss',  1),
+('importai',                'Import AI（周报）',           'tech_media',   '生成式AI应用',    'https://importai.substack.com/feed',                      'importai.substack.com',       'rss',  1),
+
+-- ============================================================================
+-- 六、安全与伦理（2个）
+-- ============================================================================
+('lesswrong',               'LessWrong（AI Alignment）',   'academic',     '安全与伦理',      'https://www.lesswrong.com/feed.xml',                      'www.lesswrong.com',           'rss',  1),
+('alignment-forum',         'AI Alignment Forum',          'academic',     '安全与伦理',      'https://www.alignmentforum.org/',                         'www.alignmentforum.org',      'web',  1),
+
+-- ============================================================================
+-- 七、学术论文（1个）
+-- ============================================================================
+('arxiv-cs-ai',             'arXiv cs.AI',                 'academic',     '学术论文',        'http://export.arxiv.org/rss/cs.AI',                       'export.arxiv.org',            'rss',  1),
+
+-- ============================================================================
+-- 八、周报与深度评论（5个）
+-- ============================================================================
+('ai-weekly',               'AI Weekly',                   'tech_media',   '周报与深度评论',  'https://aiweekly.co/rss.xml',                             'aiweekly.co',                 'rss',  1),
+('karpathy',                'Andrej Karpathy Blog',        'tech_community','周报与深度评论',  'https://karpathy.github.io/feed.xml',                     'karpathy.github.io',          'rss',  1),
+('simon-willison',          'Simon Willison Weblog',       'tech_community','周报与深度评论',  'https://simonwillison.net/atom/everything/',               'simonwillison.net',           'rss',  1),
+('stratechery',             'Stratechery（科技战略）',     'tech_media',   '周报与深度评论',  'https://stratechery.com/feed/',                           'stratechery.com',             'rss',  1),
+('ars-technica',            'Ars Technica AI',             'tech_media',   '周报与深度评论',  'https://arstechnica.com/ai/feed/',                        'arstechnica.com',             'rss',  1),
+
+-- ============================================================================
+-- 九、行业动态（中文源）（6个）
+-- ============================================================================
+('qbitai',                  '量子位',                      'tech_media',   '行业动态',        'https://www.qbitai.com/feed',                             'www.qbitai.com',              'web',  1),
+('36kr-ai',                 '36氪AI频道',                  'tech_media',   '行业动态',        'https://36kr.com/information/AI/',                        '36kr.com',                    'web',  1),
+('tmtpost',                 '钛媒体',                      'tech_media',   '行业动态',        'https://www.tmtpost.com/feed',                            'www.tmtpost.com',             'rss',  1),
+('infoq-cn',                'InfoQ中文',                   'tech_media',   '行业动态',        'https://www.infoq.cn/feed',                               'www.infoq.cn',                'rss',  1),
+('oschina-ai',              '开源中国AI',                  'tech_community','行业动态',       'https://www.oschina.net/news/rss/ai',                     'www.oschina.net',             'rss',  1),
+('tencent-cloud-ai',        '腾讯云AI专栏',                'tech_community','行业动态',       'https://cloud.tencent.com/developer/column/102946',       'cloud.tencent.com',           'web',  1),
+
+-- ============================================================================
+-- 十、金融应用（2个）
+-- ============================================================================
+('10jqka-news',             '同花顺财经要闻',               'industry_application', '金融应用',  'https://news.10jqka.com.cn/',                             'news.10jqka.com.cn',          'web',  1),
+('eastmoney-ai',            '东方财富财经',                 'industry_application', '金融应用',  'https://www.eastmoney.com/',                              'www.eastmoney.com',           'web',  1);

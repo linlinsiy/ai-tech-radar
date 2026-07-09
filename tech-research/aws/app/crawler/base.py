@@ -131,11 +131,11 @@ class CrawlerFactory:
             source: 数据源配置字典，fetch_method 决定类型
         出参：BaseCrawler 子类实例
         """
-        method = source.get("fetch_method", "rss")
+        method = source.get("fetch_method", "rss").strip().lower()
         if method == "rss":
             from crawler.rss_crawler import RSSCrawler
             return RSSCrawler(source)
-        elif method == "web":
+        elif method in ("web", "html"):
             from crawler.web_crawler import WebCrawler
             return WebCrawler(source)
         elif method == "api":

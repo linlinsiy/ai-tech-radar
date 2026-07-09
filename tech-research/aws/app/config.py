@@ -99,7 +99,8 @@ class AWSConfig:
         """
         获取所有启用的数据源列表
 
-        出参：数据源字典列表，每项包含 code/name/type/access_url/domain/fetch_method
+        出参：数据源字典列表，每项包含 code/name/type/access_url/domain/fetch_method。
+        对 HTML 爬虫等扩展配置，保留 data_sources[N].* 的所有附加键。
         """
         count = self.get_int("data_sources.count")
         sources = []
@@ -109,14 +110,12 @@ class AWSConfig:
             )
             if enabled.lower() != "true":
                 continue
-            sources.append({
-                "code": self._config.get("DEFAULT", f"data_sources[{i}].code"),
-                "name": self._config.get("DEFAULT", f"data_sources[{i}].name"),
-                "type": self._config.get("DEFAULT", f"data_sources[{i}].type"),
-                "access_url": self._config.get("DEFAULT", f"data_sources[{i}].access_url"),
-                "domain": self._config.get("DEFAULT", f"data_sources[{i}].domain"),
-                "fetch_method": self._config.get("DEFAULT", f"data_sources[{i}].fetch_method"),
-            })
+            prefix = f"data_sources[{i}]."
+            source = {}
+            for key, value in self._config.items("DEFAULT"):
+                if key.startswith(prefix):
+                    source[key[len(prefix):]] = value
+            sources.append(source)
         return sources
 
     # === 模型配置 ===
