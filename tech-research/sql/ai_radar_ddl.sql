@@ -253,3 +253,5 @@ INSERT INTO ai_radar_source (code, name, type, category, access_url, domain, fet
 
 
 ALTER TABLE ai_radar_import_batch ADD COLUMN `task_type` varchar(32) DEFAULT 'manual' COMMENT '任务类型' AFTER `scope`;
+
+ALTER TABLE ai_radar_import_batch ADD COLUMN `source_scope` varchar(64) DEFAULT 'all' COMMENT '采集范围' AFTER `task_type`;
