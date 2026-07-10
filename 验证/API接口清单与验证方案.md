@@ -509,6 +509,13 @@ curl -sS -X POST 'http://168.64.18.190:9001/api/v1/radar/import' \
 # 验证 MySQL ai_radar_import_batch 表中新增一条记录
 ```
 
+```bash
+# 失败后重新导入
+curl -sS -X POST 'http://127.0.0.1:9001/api/v1/radar/import' \
+  -H 'Content-Type: application/json' \
+  --data-binary @data/failed_imports/IMP-20260710-123456.payload.json
+```
+
 ---
 
 ### 3.3 `POST /api/v1/qa/ask` -- RAG 问答接口
@@ -730,12 +737,14 @@ curl -sS 'http://168.64.18.190:9001/api/v1/tasks?limit=5' | python3 -m json.tool
 
 - **协议**：XXL-Job（pyxxl Executor）
 - **Executor 端口**：9998
-- **功能**：基于已入库文章摘要和深度洞察，调用内部大模型生成周报/月报/专题简报草稿
+- **功能**：基于已入库文章摘要和深度洞察，调用内部大模型生成周报/月报/季报/专题简报草稿
 - **调度参数**（JSON 字符串）
 
 ```json
 {"briefing_type": "weekly"}
 {"briefing_type": "monthly"}
+{"briefing_type": "quarterly"}
+{"briefing_type": "quarterly", "from_date": "2026-04-01", "to_date": "2026-06-30"}
 {"briefing_type": "topic", "topic": "LLM Inference Optimization"}
 ```
 
@@ -760,6 +769,16 @@ curl -sS -X POST 'http://168.64.18.190:9001/api/v1/jobs/briefing' \
 curl -sS -X POST 'http://168.64.18.190:9001/api/v1/jobs/briefing' \
   -H 'Content-Type: application/json' \
   -d '{"briefing_type":"monthly"}' | python3 -m json.tool
+
+# 生成最近 90 天季报
+curl -sS -X POST 'http://168.64.18.190:9001/api/v1/jobs/briefing' \
+  -H 'Content-Type: application/json' \
+  -d '{"briefing_type":"quarterly"}' | python3 -m json.tool
+
+# 生成指定自然季度简报，例如 2026 年二季度
+curl -sS -X POST 'http://168.64.18.190:9001/api/v1/jobs/briefing' \
+  -H 'Content-Type: application/json' \
+  -d '{"briefing_type":"quarterly","from_date":"2026-04-01","to_date":"2026-06-30"}' | python3 -m json.tool
 ```
 
 ---

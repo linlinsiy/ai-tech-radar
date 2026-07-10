@@ -222,6 +222,27 @@ def _format_insights_list(insights: List[Dict]) -> str:
     return "\n\n".join(lines)
 
 
+def _parse_date_param(value: Any, is_end: bool = False) -> Optional[datetime]:
+    """
+    解析简报时间范围参数。
+
+    支持 YYYY-MM-DD 或 ISO datetime 字符串。结束日期传入纯日期时，扩展到当天 23:59:59。
+    """
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        if is_end and "T" not in text and len(text) <= 10:
+            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return dt
+    except (TypeError, ValueError):
+        logger.warning("简报日期参数解析失败: value=%s", value)
+        return None
+
+
 def handle_briefing_job(params: str = "") -> Dict[str, Any]:
     """
     XXL-Job JobHandler: aiRadarBriefingJob
@@ -239,29 +260,66 @@ def handle_briefing_job(params: str = "") -> Dict[str, Any]:
     """
     # 解析参数
     briefing_type = "weekly"
+    from_date = None
+    to_date = None
     if params:
         try:
             ps = json.loads(params) if isinstance(params, str) else params
             briefing_type = ps.get("briefing_type", "weekly")
+            from_date = ps.get("from_date") or ps.get("from")
+            to_date = ps.get("to_date") or ps.get("to")
         except json.JSONDecodeError:
             pass
 
     logger.info("====== 简报生成任务开始 ======")
-    logger.info("briefing_type=%s", briefing_type)
+    logger.info("briefing_type=%s, from_date=%s, to_date=%s", briefing_type, from_date, to_date)
 
     # 确定时间范围
     now = datetime.now()
-    if briefing_type == "weekly":
-        start_date = now - timedelta(days=7)
-        title_prefix = "AI技术趋势周报"
-    elif briefing_type == "monthly":
-        start_date = now - timedelta(days=30)
-        title_prefix = "AI技术趋势月报"
-    else:
-        start_date = now - timedelta(days=7)
-        title_prefix = "AI技术趋势专题报告"
+    title_prefix_map = {
+        "weekly": "AI技术趋势周报",
+        "monthly": "AI技术趋势月报",
+        "quarterly": "AI技术趋势季报",
+        "topic": "AI技术趋势专题报告",
+    }
+    title_prefix = title_prefix_map.get(briefing_type, "AI技术趋势专题报告")
 
-    end_date = now
+    start_date = _parse_date_param(from_date)
+    end_date = _parse_date_param(to_date, is_end=True)
+    if from_date and not start_date:
+        return {
+            "status": "failed",
+            "reason": "invalid_from_date",
+            "detail": "from_date must use YYYY-MM-DD or ISO datetime format",
+        }
+    if to_date and not end_date:
+        return {
+            "status": "failed",
+            "reason": "invalid_to_date",
+            "detail": "to_date must use YYYY-MM-DD or ISO datetime format",
+        }
+    if start_date and not end_date:
+        end_date = now
+    elif end_date and not start_date:
+        start_date = end_date - timedelta(days=7)
+    elif not start_date and not end_date:
+        if briefing_type == "weekly":
+            start_date = now - timedelta(days=7)
+        elif briefing_type == "monthly":
+            start_date = now - timedelta(days=30)
+        elif briefing_type == "quarterly":
+            start_date = now - timedelta(days=90)
+        else:
+            start_date = now - timedelta(days=7)
+        end_date = now
+
+    if start_date > end_date:
+        return {
+            "status": "failed",
+            "reason": "invalid_time_range",
+            "detail": "from_date must be earlier than or equal to to_date",
+        }
+
     time_range_str = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
 
     session = get_session()
@@ -291,7 +349,7 @@ def handle_briefing_job(params: str = "") -> Dict[str, Any]:
             "具体做了什么以及大致如何实现。风格要求：专业、精炼、客观，避免过度主观发挥，"
             "也避免写成项目建议书、风险清单、任务分解或会议纪要。"
         )
-        type_cn = {"weekly": "周报", "monthly": "月报", "topic": "专题报告"}
+        type_cn = {"weekly": "周报", "monthly": "月报", "quarterly": "季报", "topic": "专题报告"}
         user_prompt = (
             f"请根据以下近期采集和分析的 AI 技术资讯，生成一份{type_cn.get(briefing_type, '技术趋势')}简报。\n\n"
             f"【覆盖时间】{time_range_str}\n\n"

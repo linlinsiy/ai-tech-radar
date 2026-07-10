@@ -5,6 +5,7 @@
 """
 import json
 import logging
+from typing import Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
@@ -18,7 +19,15 @@ class BriefingJobRequest(BaseModel):
 
     briefing_type: str = Field(
         default="weekly",
-        description="简报类型: weekly | monthly | topic"
+        description="简报类型: weekly | monthly | quarterly | topic"
+    )
+    from_date: Optional[str] = Field(
+        default=None,
+        description="覆盖开始日期，格式 YYYY-MM-DD，可选"
+    )
+    to_date: Optional[str] = Field(
+        default=None,
+        description="覆盖结束日期，格式 YYYY-MM-DD，可选"
     )
 
 
