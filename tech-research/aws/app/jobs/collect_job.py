@@ -16,6 +16,7 @@ from collections import Counter
 from config import AWSConfig
 from crawler.base import CrawlerFactory, RawArticle
 from crawler.discovery_crawler import SearchDiscoveryCrawler
+from crawler.site_discovery_crawler import SiteDiscoveryCrawler
 from processor.parser import ContentParser
 from processor.dedup import DedupManager
 from processor.collection_audit import CollectionAudit
@@ -236,7 +237,7 @@ class CollectOrchestrator:
             "batch_no": batch_no,
             "scope": scope,
             "L0_collect": {"total": 0, "sources": 0, "errors": 0},
-            "L0_discovery": {"triggered": False, "total": 0},
+            "L0_discovery": {"triggered": False, "site_total": 0, "search_total": 0, "total": 0},
             "L1_dedup": {"total": 0, "new": 0, "skipped": 0},
             "L2_analysis": {"total": 0, "success": 0, "failed": 0, "discarded": 0},
             "L3_insight": {"triggered": 0, "success": 0},
@@ -294,8 +295,25 @@ class CollectOrchestrator:
             gaps = self._coverage_gaps(l2_results)
             if gaps:
                 stats["L0_discovery"]["triggered"] = True
-                discovery = SearchDiscoveryCrawler(discovery_config, data_sources)
-                discovered = discovery.discover(gaps, from_date, to_date)
+                mode = discovery_config.get("mode", "site")
+                discovered = []
+                if mode in ("site", "hybrid"):
+                    site_discovery = SiteDiscoveryCrawler(discovery_config, data_sources)
+                    site_articles = site_discovery.discover(gaps, from_date, to_date)
+                    discovered.extend(site_articles)
+                    stats["L0_discovery"]["site_total"] = len(site_articles)
+
+                expected = discovery_config["min_articles_per_category"] * len(gaps)
+                if (
+                    mode in ("search", "hybrid")
+                    and discovery_config.get("search_enabled")
+                    and len(discovered) < expected
+                ):
+                    search_discovery = SearchDiscoveryCrawler(discovery_config, data_sources)
+                    search_articles = search_discovery.discover(gaps, from_date, to_date)
+                    discovered.extend(search_articles)
+                    stats["L0_discovery"]["search_total"] = len(search_articles)
+
                 discovered = self._filter_by_date(discovered, from_date, to_date)
                 discovered_new = self.dedup.filter_duplicates(discovered)
                 discovered_results = self.l2.analyze_batch(discovered_new)

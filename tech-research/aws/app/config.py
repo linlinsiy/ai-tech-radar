@@ -224,21 +224,49 @@ class AWSConfig:
 
     @property
     def discovery_config(self) -> Dict:
-        """覆盖不足时使用搜索 API 自动发现已配置域名内的新文章。"""
-        key_env = self.get(option="discovery.api_key_env", fallback="SEARCH_API_KEY")
+        """覆盖不足时优先站内发现，外部搜索 API 仅作为可选补充。"""
+        key_env = self.get(
+            option="discovery.search.api_key_env",
+            fallback=self.get(option="discovery.api_key_env", fallback="SEARCH_API_KEY"),
+        )
+        search_endpoint = self.get(
+            option="discovery.search.endpoint",
+            fallback=self.get(option="discovery.search_endpoint", fallback=""),
+        )
         return {
             "enabled": self.get(option="discovery.enabled", fallback="false").lower() == "true",
-            "search_endpoint": self.get(option="discovery.search_endpoint", fallback=""),
-            "query_param": self.get(option="discovery.query_param", fallback="q"),
-            "count_param": self.get(option="discovery.count_param", fallback="count"),
+            "mode": self.get(option="discovery.mode", fallback="site").strip().lower(),
+            "max_sources_per_run": self.get_int("discovery.max_sources_per_run", 9),
+            "max_pages_per_source": self.get_int("discovery.max_pages_per_source", 3),
+            "max_urls_per_source": self.get_int("discovery.max_urls_per_source", 12),
+            "crawl_depth": self.get_int("discovery.crawl_depth", 2),
+            "max_sitemaps_per_source": self.get_int("discovery.max_sitemaps_per_source", 5),
+            "recency_days": self.get_int("discovery.recency_days", 30),
+            "request_interval_seconds": self.get_float("discovery.request_interval_seconds", 0.2),
+            "search_enabled": self.get(
+                option="discovery.search.enabled",
+                fallback="false",
+            ).lower() == "true",
+            "search_endpoint": search_endpoint,
+            "query_param": self.get(
+                option="discovery.search.query_param",
+                fallback=self.get(option="discovery.query_param", fallback="q"),
+            ),
+            "count_param": self.get(
+                option="discovery.search.count_param",
+                fallback=self.get(option="discovery.count_param", fallback="count"),
+            ),
             "api_key_header": self.get(
-                option="discovery.api_key_header",
-                fallback="Ocp-Apim-Subscription-Key",
+                option="discovery.search.api_key_header",
+                fallback=self.get(
+                    option="discovery.api_key_header",
+                    fallback="Ocp-Apim-Subscription-Key",
+                ),
             ),
             "api_key": os.environ.get(key_env, ""),
             "timeout_seconds": self.get_int("discovery.timeout_seconds", 20),
-            "max_queries_per_run": self.get_int("discovery.max_queries_per_run", 6),
-            "max_results_per_query": self.get_int("discovery.max_results_per_query", 8),
+            "max_queries_per_run": self.get_int("discovery.search.max_queries_per_run", 6),
+            "max_results_per_query": self.get_int("discovery.search.max_results_per_query", 8),
             "min_articles_per_category": self.get_int("discovery.min_articles_per_category", 2),
             "max_primary_source_ratio": self.get_float("discovery.max_primary_source_ratio", 0.4),
             "browser_source_options": {
