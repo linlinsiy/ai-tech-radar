@@ -26,7 +26,7 @@ class InternalConfig:
             "AI_RADAR_INTERNAL_CONFIG_DIR",
             os.path.join(base, "config"),
         )
-        self._config = ConfigParser()
+        self._config = ConfigParser(interpolation=None)
         self._load_config()
         self._load_env()
 
@@ -180,3 +180,40 @@ class InternalConfig:
             "max_batch_articles": int(os.environ.get("IMPORT_MAX_ARTICLES", "500")),
             "request_timeout": int(os.environ.get("IMPORT_TIMEOUT_SECONDS", "30")),
         }
+
+    @property
+    def briefing_selection_config(self) -> Dict:
+        """L4 选题数量、来源均衡和内容类型软配额。"""
+        return {
+            "target_weekly": self._config.getint("DEFAULT", "briefing.selection.target_weekly", fallback=8),
+            "target_monthly": self._config.getint("DEFAULT", "briefing.selection.target_monthly", fallback=14),
+            "target_quarterly": self._config.getint("DEFAULT", "briefing.selection.target_quarterly", fallback=18),
+            "target_topic": self._config.getint("DEFAULT", "briefing.selection.target_topic", fallback=12),
+            "min_value_score": self._config.getfloat("DEFAULT", "briefing.selection.min_value_score", fallback=5.5),
+            "max_primary_topics_per_source": self._config.getint("DEFAULT", "briefing.selection.max_primary_topics_per_source", fallback=2),
+            "max_primary_source_ratio": self._config.getfloat("DEFAULT", "briefing.selection.max_primary_source_ratio", fallback=0.2),
+            "max_category_ratio": self._config.getfloat("DEFAULT", "briefing.selection.max_category_ratio", fallback=0.35),
+            "engineering_ratio": self._config.getfloat("DEFAULT", "briefing.selection.engineering_ratio", fallback=0.55),
+            "research_ratio": self._config.getfloat("DEFAULT", "briefing.selection.research_ratio", fallback=0.25),
+            "topic_similarity_threshold": self._config.getfloat("DEFAULT", "briefing.selection.topic_similarity_threshold", fallback=0.34),
+            "max_articles_per_topic": self._config.getint("DEFAULT", "briefing.selection.max_articles_per_topic", fallback=3),
+        }
+
+    @property
+    def briefing_prompt_config(self) -> Dict[str, str]:
+        """读取内部侧固定格式简报 Prompt。"""
+        path = os.path.join(self._config_dir, "prompts", "l5_briefing.properties")
+        parser = ConfigParser(interpolation=None)
+        if os.path.exists(path):
+            parser.read(path, encoding="utf-8")
+        section = "简报生成 Prompt"
+        return {
+            "version": parser.get(section, "version", fallback="unknown"),
+            "categories": parser.get(section, "categories", fallback=""),
+            "system": parser.get(section, "system", fallback=""),
+            "prompt": parser.get(section, "prompt", fallback=""),
+        }
+
+    @property
+    def data_dir(self) -> str:
+        return self.get(option="storage.data_dir", fallback="./data")

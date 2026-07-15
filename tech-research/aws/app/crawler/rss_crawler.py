@@ -19,6 +19,13 @@ from crawler.base import BaseCrawler, RawArticle
 from logging_config import get_logger
 logger = get_logger("crawler.rss")
 
+
+def _safe_int(value, default: int) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
 BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -63,8 +70,9 @@ class RSSCrawler(BaseCrawler):
             source: 数据源配置字典
         """
         super().__init__(source)
-        self.timeout = 20
-        self.max_articles = 100
+        self.timeout = _safe_int(source.get("timeout_seconds"), 20)
+        # 仅作为异常 Feed 的技术保护，不参与最终报告来源均衡。
+        self.max_articles = _safe_int(source.get("max_articles"), 100)
 
     def _request_feed(self, url: str):
         """请求 RSS URL，统一设置浏览器 UA、超时和重定向。"""

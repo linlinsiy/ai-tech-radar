@@ -14,6 +14,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from crawler.base import BaseCrawler, RawArticle
+from crawler.browser_fetcher import BrowserFetcher
 
 from logging_config import get_logger
 logger = get_logger("crawler.web")
@@ -239,6 +240,16 @@ class WebCrawler(BaseCrawler):
         self.include_keywords = _split_keywords(source.get("include_keywords", ""))
         self.exclude_keywords = _split_keywords(source.get("exclude_keywords", ""))
 
+        self.browser_fallback_enabled = str(
+            source.get("_browser_fallback_enabled", source.get("browser_fallback", "false"))
+        ).lower() == "true"
+        self.browser_min_content_chars = _safe_int(
+            source.get("_browser_min_content_chars", ""), 300
+        )
+        self.browser_fetcher = BrowserFetcher(
+            timeout_seconds=_safe_int(source.get("_browser_timeout_seconds", ""), 45)
+        )
+
         self.session = requests.Session()
 
     def fetch(self) -> List[RawArticle]:
@@ -267,6 +278,7 @@ class WebCrawler(BaseCrawler):
 
     def _request_html(self, url: str) -> Optional[str]:
         """请求 HTML 页面，统一使用浏览器 UA。"""
+        html = None
         try:
             resp = self.session.get(
                 url,
@@ -276,12 +288,49 @@ class WebCrawler(BaseCrawler):
             )
             resp.raise_for_status()
             resp.encoding = resp.apparent_encoding or "utf-8"
-            return resp.text
+            html = resp.text
         except requests.Timeout:
             logger.warning("[%s] HTML 请求超时: %s", self.source_code, url)
         except requests.RequestException as e:
             logger.warning("[%s] HTML 请求失败: %s, %s", self.source_code, url, str(e))
-        return None
+
+        if self.browser_fallback_enabled and self._needs_browser_fallback(html):
+            logger.info("[%s] 启用浏览器降级采集: %s", self.source_code, url)
+            rendered = self.browser_fetcher.fetch_html(url)
+            if rendered:
+                return rendered
+        return html
+
+    def _needs_browser_fallback(self, html: Optional[str]) -> bool:
+        """请求失败、正文过短或明显 JS 空壳时使用浏览器渲染。"""
+        if not html:
+            return True
+        try:
+            text = _clean_text(BeautifulSoup(html, "lxml").get_text(" ", strip=True))
+        except Exception:
+            text = ""
+        lowered = html.lower()
+        js_shell = any(marker in lowered for marker in (
+            "enable javascript",
+            "please turn javascript on",
+            "id=\"__next\"",
+            "id=\"app\"></div>",
+        ))
+        return len(text) < self.browser_min_content_chars or js_shell
+
+    def fetch_urls(self, candidates: List[Dict[str, object]]) -> List[RawArticle]:
+        """抓取已发现的详情页 URL，不重新扫描列表页。"""
+        results: List[RawArticle] = []
+        for candidate in candidates[: self.max_articles]:
+            url = str(candidate.get("url") or "")
+            if not self._is_allowed_article_url(url):
+                continue
+            article = self._build_article(candidate)
+            if article:
+                results.append(article)
+            if self.request_interval > 0:
+                time.sleep(self.request_interval)
+        return results
 
     def _list_page_urls(self) -> List[str]:
         """生成列表页 URL。"""

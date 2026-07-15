@@ -38,7 +38,7 @@ class PromptRegistry:
         self._load_all()
 
     def _load_all(self):
-        """加载目录中所有 .properties 文件（手动解析 key=value，兼容带 \ 续行符的多行值）"""
+        """加载目录中所有 .properties 文件，兼容带反斜杠续行符的多行值。"""
         if not os.path.isdir(self._config_dir):
             logger.warning("Prompt 目录不存在: %s", self._config_dir)
             return

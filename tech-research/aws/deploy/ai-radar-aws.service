@@ -9,6 +9,7 @@ User=appadmin
 Group=appadmin
 WorkingDirectory=/app/001804/aws
 Environment=PYTHONPATH=/app/001804/aws/app:/app/001804/aws
+Environment=PLAYWRIGHT_BROWSERS_PATH=/app/001804/aws/.playwright-browsers
 ExecStart=/app/001804/aws/venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 9003 --log-level info
 Restart=always
 RestartSec=5

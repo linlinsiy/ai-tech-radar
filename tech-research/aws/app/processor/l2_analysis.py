@@ -8,6 +8,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional, Any
 import json
+from datetime import datetime
 
 from crawler.base import RawArticle
 from llm.client import LLMClient
@@ -34,7 +35,8 @@ class L2Analyzer:
 
     def __init__(
         self, llm: LLMClient, prompts: PromptRegistry,
-        max_concurrency: int = 3, model_name: str = "gpt-4o-mini"
+        max_concurrency: int = 3, model_name: str = "gpt-4o-mini",
+        source_profiles: Optional[Dict[str, Dict[str, str]]] = None,
     ):
         """
         初始化 L2 分析器
@@ -48,6 +50,7 @@ class L2Analyzer:
         self.prompts = prompts
         self.max_concurrency = max_concurrency
         self.model_name = model_name
+        self.source_profiles = source_profiles or {}
         # 从 prompt 配置获取分类候选列表
         tmpl = prompts.get("l2_summary")
         self.categories = (tmpl or {}).get("categories", "")
@@ -107,11 +110,11 @@ class L2Analyzer:
         """
         logger.info("L2 分析: %s", article.url_hash[:16])
 
-        # 准备输入文本
-        input_text = article.raw_summary or article.title or ""
-        if len(input_text) < 50 and article.raw_html:
-            from processor.parser import ContentParser
-            input_text = ContentParser.extract_text(article.raw_html)[:3000]
+        # L2 同时读取摘要和有限正文片段，避免只凭列表摘要判断工程价值。
+        input_text = self._prepare_input_text(article)
+        source = self.source_profiles.get(article.source_code, {})
+        source_credibility = self._source_credibility_score(source)
+        timeliness = self._timeliness_score(article.publish_time, article.crawl_time)
 
         # 渲染 Prompt
         system, user, version, _model_name = self.prompts.render(
@@ -122,6 +125,16 @@ class L2Analyzer:
             sub_categories=self.sub_categories,
             info_types=self.info_types,
             term_glossary=self.term_glossary,
+            source_name=source.get("name", article.source_code),
+            source_type=source.get("type", "unknown"),
+            source_domain=source.get("domain", ""),
+            source_category=source.get("category", ""),
+            fetch_method=source.get("fetch_method", "unknown"),
+            publish_time=article.publish_time.isoformat() if article.publish_time else "unknown",
+            crawl_time=article.crawl_time.isoformat(),
+            content_length=len(input_text),
+            source_credibility_score=source_credibility,
+            timeliness_score=timeliness,
         )
         if not system or not user:
             logger.warning("L2 Prompt 渲染失败: %s", article.url_hash[:16])
@@ -158,7 +171,13 @@ class L2Analyzer:
 
         # 组装分析结果
         scores = self._extract_scores(parsed)
+        # 来源可信度和时效性由可核验元数据确定，不接受模型猜测值。
+        scores["credibility"] = source_credibility
+        scores["timeliness"] = timeliness
         value_score = sum(scores.values()) / len(scores) if scores else 0.0
+        need_deep_analysis = parsed.get("need_deep_analysis")
+        if need_deep_analysis is None:
+            need_deep_analysis = value_score >= 8.0
 
         analysis = {
             "title_cn": str(parsed.get("title_cn") or article.title or "").strip(),
@@ -179,11 +198,74 @@ class L2Analyzer:
             "score_credibility": scores.get("credibility", 5.0),
             "score_timeliness": scores.get("timeliness", 5.0),
             "value_score": round(value_score, 2),
+            "need_deep_analysis": self._ensure_bool(need_deep_analysis),
             "model_name": result.get("model", ""),
             "prompt_version": version,
         }
 
         return {"article": article, "analysis": analysis}
+
+    @staticmethod
+    def _prepare_input_text(article: RawArticle) -> str:
+        """组合摘要和正文样本，控制输入长度且保留文章开头技术信息。"""
+        from processor.parser import ContentParser
+
+        summary = ContentParser.extract_text(article.raw_summary or "").strip()
+        full_sample = ""
+        if article.raw_html:
+            full_sample = ContentParser.extract_main_content(article.raw_html)[:3500].strip()
+        parts = [part for part in (summary[:1200], full_sample) if part]
+        return "\n\n".join(parts) or article.title or ""
+
+    @staticmethod
+    def _source_credibility_score(source: Dict[str, str]) -> float:
+        """从来源配置计算基础可信度；可用 credibility_score 单源覆盖。"""
+        configured = source.get("credibility_score")
+        if configured not in (None, ""):
+            try:
+                return max(1.0, min(10.0, float(configured)))
+            except (TypeError, ValueError):
+                pass
+        type_scores = {
+            "academic": 9.0,
+            "regulator": 9.0,
+            "vendor_blog": 8.5,
+            "industry_application": 8.0,
+            "tech_media": 7.5,
+            "tech_community": 7.0,
+        }
+        return type_scores.get(str(source.get("type") or "").strip(), 6.5)
+
+    @staticmethod
+    def _timeliness_score(
+        publish_time: Optional[datetime], crawl_time: Optional[datetime]
+    ) -> float:
+        """按采集时文章年龄确定时效性，未知发布时间使用中性分。"""
+        if not publish_time:
+            return 5.0
+        reference = crawl_time or datetime.now()
+        published = publish_time.replace(tzinfo=None)
+        reference = reference.replace(tzinfo=None)
+        age_days = max(0, (reference - published).days)
+        if age_days <= 7:
+            return 10.0
+        if age_days <= 30:
+            return 9.0
+        if age_days <= 90:
+            return 8.0
+        if age_days <= 180:
+            return 6.0
+        if age_days <= 365:
+            return 4.0
+        return 2.0
+
+    @staticmethod
+    def _ensure_bool(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "是")
+        return bool(value)
 
     @staticmethod
     def _ensure_list(value) -> List[str]:

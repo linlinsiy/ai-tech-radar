@@ -180,7 +180,7 @@ class AWSConfig:
     @property
     def deep_insight_min_score(self) -> float:
         """L3 深度洞察触发最低评分"""
-        return self.get_float("deep_insight.min_value_score", 7.0)
+        return self.get_float("deep_insight.min_value_score", 8.0)
 
     @property
     def deep_insight_require_full_content(self) -> bool:
@@ -212,6 +212,41 @@ class AWSConfig:
     def temp_retention_days(self) -> int:
         """临时文件保留天数"""
         return self.get_int("storage.temp_retention_days", 7)
+
+    @property
+    def browser_fallback_config(self) -> Dict:
+        """普通 HTTP 采集失败时的 Headless Chromium 降级配置。"""
+        return {
+            "enabled": self.get(option="browser_fallback.enabled", fallback="false").lower() == "true",
+            "timeout_seconds": self.get_int("browser_fallback.timeout_seconds", 45),
+            "min_content_chars": self.get_int("browser_fallback.min_content_chars", 300),
+        }
+
+    @property
+    def discovery_config(self) -> Dict:
+        """覆盖不足时使用搜索 API 自动发现已配置域名内的新文章。"""
+        key_env = self.get(option="discovery.api_key_env", fallback="SEARCH_API_KEY")
+        return {
+            "enabled": self.get(option="discovery.enabled", fallback="false").lower() == "true",
+            "search_endpoint": self.get(option="discovery.search_endpoint", fallback=""),
+            "query_param": self.get(option="discovery.query_param", fallback="q"),
+            "count_param": self.get(option="discovery.count_param", fallback="count"),
+            "api_key_header": self.get(
+                option="discovery.api_key_header",
+                fallback="Ocp-Apim-Subscription-Key",
+            ),
+            "api_key": os.environ.get(key_env, ""),
+            "timeout_seconds": self.get_int("discovery.timeout_seconds", 20),
+            "max_queries_per_run": self.get_int("discovery.max_queries_per_run", 6),
+            "max_results_per_query": self.get_int("discovery.max_results_per_query", 8),
+            "min_articles_per_category": self.get_int("discovery.min_articles_per_category", 2),
+            "max_primary_source_ratio": self.get_float("discovery.max_primary_source_ratio", 0.4),
+            "browser_source_options": {
+                "_browser_fallback_enabled": str(self.browser_fallback_config["enabled"]).lower(),
+                "_browser_timeout_seconds": str(self.browser_fallback_config["timeout_seconds"]),
+                "_browser_min_content_chars": str(self.browser_fallback_config["min_content_chars"]),
+            },
+        }
 
     # === 安全白名单 ===
 

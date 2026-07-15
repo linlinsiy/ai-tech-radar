@@ -12,6 +12,7 @@ from crawler.base import RawArticle
 from llm.client import LLMClient
 from llm.prompts import PromptRegistry
 from processor.parser import ContentParser
+from crawler.browser_fetcher import BrowserFetcher
 
 from logging_config import get_logger
 logger = get_logger("deep.insight")
@@ -34,8 +35,9 @@ class L3Analyzer:
 
     def __init__(
         self, llm: LLMClient, prompts: PromptRegistry,
-        min_score: float = 7.0, require_full_content: bool = True,
-        model_name: str = "gpt-4o"
+        min_score: float = 8.0, require_full_content: bool = True,
+        model_name: str = "gpt-4o", browser_fallback: bool = False,
+        browser_timeout_seconds: int = 45,
     ):
         """
         初始化 L3 分析器
@@ -51,6 +53,8 @@ class L3Analyzer:
         self.min_score = min_score
         self.require_full_content = require_full_content
         self.model_name = model_name
+        self.browser_fallback = browser_fallback
+        self.browser_fetcher = BrowserFetcher(browser_timeout_seconds)
 
     def should_trigger(
         self, l2_result: Dict[str, Any]
@@ -72,11 +76,17 @@ class L3Analyzer:
             logger.info("L3 不触发: value_score=%.1f < %.1f", score, self.min_score)
             return False
 
+        if analysis.get("need_deep_analysis") is False:
+            logger.info("L3 不触发: L2 判断正文技术细节不足")
+            return False
+
         if self.require_full_content:
             # 检查是否已有全文，若无则尝试获取
             if article and not article.raw_html:
                 logger.info("L3 尝试获取全文: %s", article.url)
                 html = ContentParser.fetch_full_content(article.url)
+                if not html and self.browser_fallback:
+                    html = self.browser_fetcher.fetch_html(article.url)
                 if html:
                     article.raw_html = html
                 else:

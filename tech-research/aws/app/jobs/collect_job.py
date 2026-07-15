@@ -11,11 +11,14 @@ import json
 import time
 from datetime import datetime
 from typing import List, Dict, Any
+from collections import Counter
 
 from config import AWSConfig
 from crawler.base import CrawlerFactory, RawArticle
+from crawler.discovery_crawler import SearchDiscoveryCrawler
 from processor.parser import ContentParser
 from processor.dedup import DedupManager
+from processor.collection_audit import CollectionAudit
 from processor.l2_analysis import L2Analyzer
 from deep.insight import L3Analyzer
 from exporter.import_client import ImportClient
@@ -71,17 +74,24 @@ class CollectOrchestrator:
         # 初始化 Prompt 注册表
         self.prompts = PromptRegistry()
 
+        self.source_profiles = {
+            source["code"]: source for source in config.get_data_sources()
+        }
+
         # 初始化分析器
         self.l2 = L2Analyzer(
             self.l2_llm, self.prompts,
             max_concurrency=config.l2_model["max_concurrency"],
-            model_name=config.l2_model["model"]
+            model_name=config.l2_model["model"],
+            source_profiles=self.source_profiles,
         )
         self.l3 = L3Analyzer(
             self.l3_llm, self.prompts,
             min_score=config.deep_insight_min_score,
             require_full_content=config.deep_insight_require_full_content,
-            model_name=config.l3_model["model"]
+            model_name=config.l3_model["model"],
+            browser_fallback=config.browser_fallback_config["enabled"],
+            browser_timeout_seconds=config.browser_fallback_config["timeout_seconds"],
         )
 
         # 初始化导入客户端
@@ -100,6 +110,59 @@ class CollectOrchestrator:
         if not key:
             logger.warning("OPENAI_API_KEY 未设置")
         return key
+
+    def _with_runtime_crawler_options(self, source: Dict[str, str]) -> Dict[str, str]:
+        """向数据源配置注入全局浏览器降级参数，不改变原始配置。"""
+        runtime = dict(source)
+        browser = self.config.browser_fallback_config
+        runtime["_browser_fallback_enabled"] = str(browser["enabled"]).lower()
+        runtime["_browser_timeout_seconds"] = str(browser["timeout_seconds"])
+        runtime["_browser_min_content_chars"] = str(browser["min_content_chars"])
+        return runtime
+
+    @staticmethod
+    def _filter_by_date(
+        articles: List[RawArticle],
+        from_date: str = None,
+        to_date: str = None,
+    ) -> List[RawArticle]:
+        if not from_date and not to_date:
+            return articles
+        start = datetime.fromisoformat(from_date) if from_date else None
+        end = datetime.fromisoformat(to_date) if to_date else None
+        if end:
+            end = end.replace(hour=23, minute=59, second=59)
+        filtered = []
+        for article in articles:
+            published = article.publish_time.replace(tzinfo=None) if article.publish_time else None
+            if published is None or (
+                (start is None or published >= start)
+                and (end is None or published <= end)
+            ):
+                filtered.append(article)
+        return filtered
+
+    def _coverage_gaps(self, l2_results: List[Dict[str, Any]]) -> List[str]:
+        """识别分类覆盖不足或来源过度集中的方向，供一次性搜索补充。"""
+        config = self.config.discovery_config
+        minimum = config["min_articles_per_category"]
+        categories = [
+            category for category in self.l2.allowed_categories
+            if category and category != "其他AI相关"
+        ]
+        category_counts = Counter(
+            result.get("analysis", {}).get("category", "") for result in l2_results
+        )
+        gaps = [category for category in categories if category_counts[category] < minimum]
+
+        source_counts = Counter(
+            result["article"].source_code for result in l2_results if result.get("article")
+        )
+        total = sum(source_counts.values())
+        concentration = max(source_counts.values(), default=0) / total if total else 1.0
+        if concentration > config["max_primary_source_ratio"] and not gaps:
+            gaps = sorted(categories, key=lambda item: category_counts[item])
+        return gaps
 
     def _persist_failed_import_payload(
         self,
@@ -164,6 +227,7 @@ class CollectOrchestrator:
         """
         start_time = time.time()
         batch_no = f"IMP-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        audit = CollectionAudit(self.config.data_dir, batch_no)
 
         logger.info("====== 采集分析任务开始 ======")
         logger.info("batch_no=%s, scope=%s", batch_no, scope)
@@ -172,6 +236,7 @@ class CollectOrchestrator:
             "batch_no": batch_no,
             "scope": scope,
             "L0_collect": {"total": 0, "sources": 0, "errors": 0},
+            "L0_discovery": {"triggered": False, "total": 0},
             "L1_dedup": {"total": 0, "new": 0, "skipped": 0},
             "L2_analysis": {"total": 0, "success": 0, "failed": 0, "discarded": 0},
             "L3_insight": {"triggered": 0, "success": 0},
@@ -188,30 +253,26 @@ class CollectOrchestrator:
 
         for source in data_sources:
             try:
-                crawler = CrawlerFactory.create(source)
+                crawler = CrawlerFactory.create(self._with_runtime_crawler_options(source))
                 articles = crawler.fetch()
                 all_articles.extend(articles)
+                audit.record_source(
+                    source,
+                    len(articles),
+                    "success" if articles else "empty",
+                )
                 logger.info("[%s] 采集 %d 篇", source["code"], len(articles))
             except Exception as e:
                 logger.error("[%s] 采集异常: %s", source["code"], str(e))
                 stats["L0_collect"]["errors"] += 1
+                audit.record_source(source, 0, "failed", str(e))
 
         stats["L0_collect"]["total"] = len(all_articles)
         logger.info("L0 采集完成: total_articles=%d", len(all_articles))
 
         # === 日期过滤（独立于 scope，与 sources 可任意组合） ===
         if from_date or to_date:
-            fd = datetime.fromisoformat(from_date) if from_date else None
-            td = datetime.fromisoformat(to_date) if to_date else None
-            if td:
-                td = td.replace(hour=23, minute=59, second=59)
-            filtered = []
-            for art in all_articles:
-                if art.publish_time is None:
-                    filtered.append(art)
-                elif (fd is None or art.publish_time >= fd) and (td is None or art.publish_time <= td):
-                    filtered.append(art)
-            all_articles = filtered
+            all_articles = self._filter_by_date(all_articles, from_date, to_date)
             logger.info("日期过滤: %d 篇 -> %d 篇 (from=%s, to=%s)",
                         stats["L0_collect"]["total"], len(all_articles), from_date or "-", to_date or "-")
 
@@ -221,15 +282,31 @@ class CollectOrchestrator:
         stats["L1_dedup"]["new"] = len(new_articles)
         stats["L1_dedup"]["skipped"] = len(all_articles) - len(new_articles)
 
-        if not new_articles:
-            logger.info("无新文章，流程结束")
-            return stats
-
         # === L2: 基础分析 ===
         l2_results = self.l2.analyze_batch(new_articles)
         stats["L2_analysis"]["total"] = len(new_articles)
         stats["L2_analysis"]["success"] = len(l2_results)
         stats["L2_analysis"]["failed"] = len(new_articles) - len(l2_results)
+
+        # === 覆盖不足时自动发现已配置域名内的新 URL，再进入同一 L1/L2 链路 ===
+        discovery_config = self.config.discovery_config
+        if discovery_config["enabled"]:
+            gaps = self._coverage_gaps(l2_results)
+            if gaps:
+                stats["L0_discovery"]["triggered"] = True
+                discovery = SearchDiscoveryCrawler(discovery_config, data_sources)
+                discovered = discovery.discover(gaps, from_date, to_date)
+                discovered = self._filter_by_date(discovered, from_date, to_date)
+                discovered_new = self.dedup.filter_duplicates(discovered)
+                discovered_results = self.l2.analyze_batch(discovered_new)
+                l2_results.extend(discovered_results)
+                stats["L0_discovery"]["total"] = len(discovered)
+                stats["L1_dedup"]["total"] += len(discovered)
+                stats["L1_dedup"]["new"] += len(discovered_new)
+                stats["L1_dedup"]["skipped"] += len(discovered) - len(discovered_new)
+                stats["L2_analysis"]["total"] += len(discovered_new)
+                stats["L2_analysis"]["success"] += len(discovered_results)
+                stats["L2_analysis"]["failed"] += len(discovered_new) - len(discovered_results)
         kept_l2_results = []
         discarded_l2_results = []
         for result in l2_results:
@@ -254,6 +331,7 @@ class CollectOrchestrator:
                 "L2 分析结果均已丢弃，无需导入: discarded=%d",
                 len(discarded_l2_results),
             )
+            audit.save([], stats)
             return stats
 
         # === L3: 深度洞察 ===
@@ -263,14 +341,14 @@ class CollectOrchestrator:
             stats["L3_insight"]["triggered"] = len(l3_results)
             stats["L3_insight"]["success"] = len(l3_results)
 
-                # 对所有文章计算 content_hash（基于 raw_summary + raw_html）
-                # 对所有文章计算 content_hash（基于 raw_summary + raw_html）
+        # 对所有文章计算清洗正文和 content_hash。
         for r in l2_results:
             art = r["article"]
             if not art.content_hash:
-                hash_source = art.raw_summary or ""
-                if art.raw_html:
-                    hash_source = (hash_source + "\n" + art.raw_html)[:8000]
+                hash_source = (
+                    ContentParser.extract_main_content(art.raw_html)
+                    if art.raw_html else art.raw_summary or ""
+                )
                 if not hash_source:
                     hash_source = art.url or ""
                 if hash_source:
@@ -280,6 +358,10 @@ class CollectOrchestrator:
         article_items = []
         for r in l2_results:
             art = r["article"]
+            clean_content = (
+                ContentParser.extract_main_content(art.raw_html)
+                if art.raw_html else art.raw_summary
+            )
             article_items.append({
                 "url": art.url,
                 "url_hash": art.url_hash,
@@ -289,7 +371,7 @@ class CollectOrchestrator:
                 "publish_time": art.publish_time.isoformat() if art.publish_time else None,
                 "crawl_time": art.crawl_time.isoformat(),
                 "raw_summary": art.raw_summary,
-                "full_content": art.raw_html or art.raw_summary,  # L3 获取的全文，无 raw_html 时回退到 raw_summary
+                "full_content": clean_content,
                 "content_hash": art.content_hash,
             })
 
@@ -355,8 +437,37 @@ class CollectOrchestrator:
                 stats,
             )
 
+        audit_articles = []
+        for result in l2_results:
+            article = result["article"]
+            analysis = result["analysis"]
+            audit_articles.append({
+                "url": article.url,
+                "source_code": article.source_code,
+                "title": article.title,
+                "publish_time": article.publish_time,
+                "status": "analyzed",
+                "category": analysis.get("category"),
+                "info_type": analysis.get("info_type"),
+                "value_score": analysis.get("value_score"),
+            })
+        for result in discarded_l2_results:
+            article = result["article"]
+            analysis = result["analysis"]
+            audit_articles.append({
+                "url": article.url,
+                "source_code": article.source_code,
+                "title": article.title,
+                "publish_time": article.publish_time,
+                "status": "discarded",
+                "reason": "low_value_other_ai_vertical",
+                "category": analysis.get("category"),
+                "info_type": analysis.get("info_type"),
+                "value_score": analysis.get("value_score"),
+            })
         elapsed = time.time() - start_time
         stats["elapsed_seconds"] = round(elapsed, 1)
+        audit.save(audit_articles, stats)
 
         logger.info("====== 采集分析任务完成 ======")
         logger.info("batch_no=%s, elapsed=%.1fs, stats=%s",

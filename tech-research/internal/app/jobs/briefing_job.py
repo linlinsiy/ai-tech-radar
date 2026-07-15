@@ -1,75 +1,67 @@
-"""
-内部侧 - 简报生成 Job
+"""Internal L4 topic selection and L5 briefing generation job."""
 
-aiRadarBriefingJob: 定时/手动触发，查 MySQL 近一周/月文章 + 洞察，
-调用内部大模型生成简报，写 MySQL 元数据 + EIPLite 知识库。
-"""
 import json
 import logging
+import os
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
-from db.models import get_session, Article, ArticleAnalysis, DeepInsight, BriefingDraft
-from config import InternalConfig
 import httpx
-import time
+
+from config import InternalConfig
+from db.models import Article, ArticleAnalysis, BriefingDraft, DeepInsight, Source, get_session
+from jobs.briefing_selector import BriefingSelector, CATEGORY_ORDER
 from kb.markdown_gen import generate_briefing
 
 logger = logging.getLogger("jobs.briefing")
 
 
 def _query_articles(session, start_date: datetime, end_date: datetime) -> List[Dict]:
-    """
-    查询时间范围内的文章及分析结果（按价值评分降序）
-
-    入参：
-        session: DB 会话
-        start_date: 开始日期
-        end_date: 结束日期
-    出参：文章列表 [{"title": ..., "category": ..., "sub_category": ..., "summary_cn": ..., "value_score": ..., "url": ...}]
-    """
+    """Load all qualified period candidates; L4, rather than SQL LIMIT, selects topics."""
     from sqlalchemy import desc
 
-    articles = (
-        session.query(Article, ArticleAnalysis)
+    rows = (
+        session.query(Article, ArticleAnalysis, Source)
         .join(ArticleAnalysis, Article.id == ArticleAnalysis.article_id)
+        .join(Source, Article.source_id == Source.id)
         .filter(Article.publish_time >= start_date)
         .filter(Article.publish_time <= end_date)
         .filter(ArticleAnalysis.analysis_status == "success")
         .order_by(desc(ArticleAnalysis.value_score))
-        .limit(15)
         .all()
     )
 
     result = []
-    for art, analysis in articles:
+    for article, analysis, source in rows:
         result.append({
-            "id": art.id,
-            "title": art.title,
-            "url": art.url,
-            "category": analysis.category or "",
+            "id": article.id,
+            "title": article.title,
+            "url": article.url,
+            "publish_time": article.publish_time,
+            "source_code": source.source_code,
+            "source_name": source.source_name,
+            "source_type": source.source_type or "",
+            "source_domain": source.domain or "",
+            "category": analysis.category or "其他AI相关",
             "sub_category": analysis.sub_category or "",
-            "info_type": analysis.info_type or "",
+            "info_type": analysis.info_type or "其他",
             "briefing_focus": analysis.briefing_focus or "",
             "summary_cn": analysis.summary_cn or "",
-            "value_score": float(analysis.value_score) if analysis.value_score else 0,
+            "keywords": analysis.keywords or "",
+            "tech_tags": analysis.tech_tags or [],
+            "companies": analysis.companies or [],
+            "score_tech_depth": float(analysis.score_tech_depth or 0),
+            "score_engineering": float(analysis.score_engineering or 0),
+            "score_trend": float(analysis.score_trend or 0),
+            "score_credibility": float(analysis.score_credibility or 0),
+            "score_timeliness": float(analysis.score_timeliness or 0),
+            "value_score": float(analysis.value_score or 0),
         })
     return result
 
 
 def _query_insights(session, start_date: datetime, end_date: datetime) -> List[Dict]:
-    """
-    查询时间范围内的深度洞察
-
-    入参：
-        session: DB 会话
-        start_date: 开始日期
-        end_date: 结束日期
-    出参：洞察列表
-    """
-    from sqlalchemy import desc
-
-    insights = (
+    rows = (
         session.query(DeepInsight, Article)
         .join(Article, DeepInsight.article_id == Article.id)
         .filter(Article.publish_time >= start_date)
@@ -77,348 +69,294 @@ def _query_insights(session, start_date: datetime, end_date: datetime) -> List[D
         .filter(DeepInsight.analysis_status == "success")
         .all()
     )
-
-    result = []
-    for ins, art in insights:
-        result.append({
-            "id": ins.id,
-            "title": art.title,
-            "url": art.url,
-            "technical_background": ins.technical_background,
-            "core_problem": ins.core_problem,
-            "technical_solution": ins.technical_solution,
-            "impact_analysis": ins.impact_analysis or "",
-            "reference_value": ins.reference_value or "",
-        })
-    return result
+    return [
+        {
+            "id": insight.id,
+            "article_id": article.id,
+            "title": article.title,
+            "url": article.url,
+            "technical_background": insight.technical_background or "",
+            "core_problem": insight.core_problem or "",
+            "technical_solution": insight.technical_solution or "",
+            "impact_analysis": insight.impact_analysis or "",
+            "reference_value": insight.reference_value or "",
+        }
+        for insight, article in rows
+    ]
 
 
 def _call_internal_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
-    """
-    调用内部大模型生成简报（OpenAI 兼容接口）
-
-    入参：
-        system_prompt: 系统指令
-        user_prompt: 用户提示词
-    出参：生成的简报正文，失败返回 None
-
-    调用内部 Qwen3-32B-AWQ 模型的 chat/completions 接口，
-    超时时间 300 秒，不进行失败重试，API Key 为可选。
-    """
+    """Call the internal OpenAI-compatible model with a 300-second timeout and no retry."""
     cfg = InternalConfig.get_instance().internal_llm_config
-    api_key = cfg["api_key"]
-    base_url = cfg["base_url"]
-    model = cfg["model"]
-
-    if not base_url or not model:
+    if not cfg["base_url"] or not cfg["model"]:
         logger.warning("内部大模型未配置（base_url/model 为空），无法生成简报")
         return None
 
-    url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    if cfg["api_key"]:
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    if cfg.get("user_id"):
+        headers["userid"] = cfg["user_id"]
 
     payload = {
-        "model": model,
+        "model": cfg["model"],
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.7,
-        "max_tokens": 3000,
+        "temperature": cfg["temperature"],
+        "max_tokens": cfg["max_tokens"],
     }
-
-    timeout_seconds = 300.0
-    max_retries = 0
-    retry_backoff = (10, 30)
-
-    for attempt in range(max_retries + 1):
-        try:
-            resp = httpx.post(url, headers=headers, json=payload, timeout=timeout_seconds)
-        except httpx.TimeoutException:
-            logger.warning("内部 LLM 超时 (attempt %d/%d): %s",
-                           attempt + 1, max_retries + 1, url)
-            if attempt < max_retries:
-                time.sleep(retry_backoff[min(attempt, len(retry_backoff) - 1)])
-            continue
-        except httpx.ConnectError as e:
-            logger.warning("内部 LLM 连接失败 (attempt %d/%d): %s",
-                           attempt + 1, max_retries + 1, e)
-            if attempt < max_retries:
-                time.sleep(retry_backoff[min(attempt, len(retry_backoff) - 1)])
-            continue
-        except Exception as e:
-            logger.error("内部 LLM 请求异常: %s", e)
+    url = f"{cfg['base_url'].rstrip('/')}/chat/completions"
+    try:
+        response = httpx.post(url, headers=headers, json=payload, timeout=300.0)
+        response.raise_for_status()
+        data = response.json()
+        choices = data.get("choices", [])
+        if not choices:
+            logger.error("内部 LLM 返回空 choices: %s", str(data)[:200])
             return None
-
-        if resp.status_code == 200:
-            try:
-                data = resp.json()
-                choices = data.get("choices", [])
-                if choices:
-                    content = choices[0].get("message", {}).get("content", "")
-                    usage = data.get("usage", {})
-                    logger.info(
-                        "内部 LLM 调用成功: model=%s, tokens(prompt=%d, completion=%d)",
-                        model,
-                        usage.get("prompt_tokens", 0),
-                        usage.get("completion_tokens", 0),
-                    )
-                    return content
-                logger.error("内部 LLM 返回空 choices: %s", str(data)[:200])
-                return None
-            except Exception as e:
-                logger.error("内部 LLM 响应解析失败: %s", e)
-                return None
-
-        if resp.status_code == 503 and attempt < max_retries:
-            logger.warning("内部 LLM 503 (attempt %d/%d): %s",
-                           attempt + 1, max_retries + 1, resp.text[:200] if resp.text else "")
-            time.sleep(retry_backoff[min(attempt, len(retry_backoff) - 1)])
-            continue
-
-        logger.error("内部 LLM 返回错误 (status=%d): %s",
-                     resp.status_code, (resp.text or "")[:300])
-        if attempt < max_retries:
-            time.sleep(retry_backoff[min(attempt, len(retry_backoff) - 1)])
-            continue
-        return None
-
+        content = choices[0].get("message", {}).get("content", "")
+        usage = data.get("usage", {})
+        logger.info(
+            "内部 LLM 调用成功: model=%s, tokens(prompt=%d, completion=%d)",
+            cfg["model"],
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+        )
+        return content or None
+    except httpx.TimeoutException:
+        logger.warning("内部 LLM 超时: %s", url)
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            "内部 LLM 返回错误: status=%s, body=%s",
+            exc.response.status_code,
+            (exc.response.text or "")[:300],
+        )
+    except Exception as exc:
+        logger.error("内部 LLM 请求异常: %s", str(exc))
     return None
 
 
-def _format_articles_list(articles: List[Dict]) -> str:
-    """格式化文章列表为 LLM 输入文本"""
-    lines = []
-    for i, a in enumerate(articles, 1):
-        category_text = a["category"]
-        if a.get("sub_category"):
-            category_text = f"{category_text}/{a['sub_category']}" if category_text else a["sub_category"]
-        if a.get("info_type"):
-            category_text = f"{category_text} · {a['info_type']}" if category_text else a["info_type"]
-        focus = a.get("briefing_focus") or a["summary_cn"][:200]
-        lines.append(
-            f"{i}. 【{category_text}】{a['title']}\n"
-            f"   评分: {a['value_score']:.1f}/10\n"
-            f"   摘要: {a['summary_cn'][:200]}\n"
-            f"   简报重点: {focus}\n"
-            f"   链接: {a['url']}"
+def _format_topics(topics: List[Dict]) -> str:
+    blocks = []
+    for index, topic in enumerate(topics, 1):
+        primary = topic["primary"]
+        article_lines = []
+        for article in topic["articles"]:
+            published = (
+                article["publish_time"].strftime("%Y-%m-%d")
+                if article.get("publish_time") else "日期未知"
+            )
+            article_lines.append(
+                f"- {article['source_name']}｜{published}｜{article['info_type']}\n"
+                f"  标题：{article['title']}\n"
+                f"  摘要：{article['summary_cn'][:500]}\n"
+                f"  简报重点：{article.get('briefing_focus') or article['summary_cn'][:200]}\n"
+                f"  链接：{article['url']}"
+            )
+        blocks.append(
+            f"主题 {index}：{topic['title']}\n"
+            f"一级分类：{topic['category']}\n"
+            f"内容类型：{topic['lane']}\n"
+            f"报告排序分：{topic['report_rank_score']:.2f}\n"
+            f"主来源：{primary['source_name']}\n"
+            f"重大事件豁免：{'是' if topic['must_include'] else '否'}\n"
+            f"关联资讯：\n" + "\n".join(article_lines)
         )
-    return "\n\n".join(lines)
+    return "\n\n".join(blocks)
 
 
-def _format_insights_list(insights: List[Dict]) -> str:
-    """格式化洞察列表为 LLM 输入文本"""
-    if not insights:
-        return "本周期无深度洞察文章。"
-    lines = []
-    for i, ins in enumerate(insights, 1):
-        lines.append(
-            f"{i}. {ins['title']}\n"
-            f"   洞察摘要: {ins['core_problem'][:120]} {ins['technical_solution'][:160]}\n"
-            f"   补充信息: {ins['reference_value'][:150]}"
-        )
-    return "\n\n".join(lines)
+def _format_insights(insights: List[Dict], selected_article_ids: set) -> str:
+    selected = [item for item in insights if item["article_id"] in selected_article_ids]
+    if not selected:
+        return "本期入选主题无对应 L3 深度洞察。"
+    return "\n\n".join(
+        f"{index}. {item['title']}\n"
+        f"技术背景：{item['technical_background'][:300]}\n"
+        f"核心问题：{item['core_problem'][:300]}\n"
+        f"技术方案：{item['technical_solution'][:500]}\n"
+        f"影响与参考：{item['impact_analysis'][:250]} {item['reference_value'][:250]}"
+        for index, item in enumerate(selected, 1)
+    )
+
+
+def _render_briefing_prompt(
+    briefing_type: str,
+    time_range: str,
+    topics_text: str,
+    insights_text: str,
+) -> tuple:
+    prompt_config = InternalConfig.get_instance().briefing_prompt_config
+    system = prompt_config["system"].replace("\\n", "\n")
+    template = prompt_config["prompt"].replace("\\n", "\n")
+    if not system or not template:
+        return "", "", prompt_config["version"]
+    type_names = {
+        "weekly": "AI技术趋势周报",
+        "monthly": "AI技术趋势月报",
+        "quarterly": "AI技术趋势季报",
+        "topic": "AI技术趋势专题报告",
+    }
+    user = template.format(
+        briefing_type=type_names.get(briefing_type, "AI技术趋势报告"),
+        time_range=time_range,
+        category_order="、".join(CATEGORY_ORDER),
+        topics=topics_text,
+        insights=insights_text,
+    )
+    return system, user, prompt_config["version"]
 
 
 def _parse_date_param(value: Any, is_end: bool = False) -> Optional[datetime]:
-    """
-    解析简报时间范围参数。
-
-    支持 YYYY-MM-DD 或 ISO datetime 字符串。结束日期传入纯日期时，扩展到当天 23:59:59。
-    """
     if not value:
         return None
     try:
         text = str(value).strip()
         if not text:
             return None
-        dt = datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
         if is_end and "T" not in text and len(text) <= 10:
-            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
-        return dt
+            parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return parsed
     except (TypeError, ValueError):
         logger.warning("简报日期参数解析失败: value=%s", value)
         return None
 
 
+def _persist_selection_metadata(title: str, metadata: Dict):
+    directory = os.path.join(InternalConfig.get_instance().data_dir, "briefing_selections")
+    try:
+        os.makedirs(directory, exist_ok=True)
+        filename = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+        with open(os.path.join(directory, filename), "w", encoding="utf-8") as handle:
+            json.dump(
+                {"title": title, "generated_at": datetime.now().isoformat(), **metadata},
+                handle,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+    except OSError as exc:
+        logger.warning("L4 选题审计文件保存失败: %s", str(exc))
+
+
 def handle_briefing_job(params: str = "") -> Dict[str, Any]:
-    """
-    XXL-Job JobHandler: aiRadarBriefingJob
-
-    入参：
-        params: 调度参数 JSON，如 {"briefing_type":"weekly"}
-    出参：生成统计
-
-    流程：
-        1. 解析调度参数，确定时间范围和简报类型
-        2. 查 MySQL 获取文章和洞察
-        3. 调用内部大模型生成简报正文
-        4. 写入 ai_radar_briefing_draft 元数据
-        5. 生成 Markdown 文件 → EIPLite 上传（待集成）
-    """
-    # 解析参数
+    """Generate a weekly, monthly, quarterly or topic briefing without changing its API."""
     briefing_type = "weekly"
     from_date = None
     to_date = None
     if params:
         try:
-            ps = json.loads(params) if isinstance(params, str) else params
-            briefing_type = ps.get("briefing_type", "weekly")
-            from_date = ps.get("from_date") or ps.get("from")
-            to_date = ps.get("to_date") or ps.get("to")
-        except json.JSONDecodeError:
-            pass
+            parsed_params = json.loads(params) if isinstance(params, str) else params
+            briefing_type = parsed_params.get("briefing_type", "weekly")
+            from_date = parsed_params.get("from_date") or parsed_params.get("from")
+            to_date = parsed_params.get("to_date") or parsed_params.get("to")
+        except (json.JSONDecodeError, AttributeError):
+            logger.warning("简报调度参数解析失败: %s", params)
 
-    logger.info("====== 简报生成任务开始 ======")
-    logger.info("briefing_type=%s, from_date=%s, to_date=%s", briefing_type, from_date, to_date)
-
-    # 确定时间范围
     now = datetime.now()
-    title_prefix_map = {
-        "weekly": "AI技术趋势周报",
-        "monthly": "AI技术趋势月报",
-        "quarterly": "AI技术趋势季报",
-        "topic": "AI技术趋势专题报告",
-    }
-    title_prefix = title_prefix_map.get(briefing_type, "AI技术趋势专题报告")
-
     start_date = _parse_date_param(from_date)
     end_date = _parse_date_param(to_date, is_end=True)
     if from_date and not start_date:
-        return {
-            "status": "failed",
-            "reason": "invalid_from_date",
-            "detail": "from_date must use YYYY-MM-DD or ISO datetime format",
-        }
+        return {"status": "failed", "reason": "invalid_from_date", "detail": "from_date must use YYYY-MM-DD or ISO datetime format"}
     if to_date and not end_date:
-        return {
-            "status": "failed",
-            "reason": "invalid_to_date",
-            "detail": "to_date must use YYYY-MM-DD or ISO datetime format",
-        }
+        return {"status": "failed", "reason": "invalid_to_date", "detail": "to_date must use YYYY-MM-DD or ISO datetime format"}
     if start_date and not end_date:
         end_date = now
     elif end_date and not start_date:
         start_date = end_date - timedelta(days=7)
     elif not start_date and not end_date:
-        if briefing_type == "weekly":
-            start_date = now - timedelta(days=7)
-        elif briefing_type == "monthly":
-            start_date = now - timedelta(days=30)
-        elif briefing_type == "quarterly":
-            start_date = now - timedelta(days=90)
-        else:
-            start_date = now - timedelta(days=7)
-        end_date = now
-
+        days = {"weekly": 7, "monthly": 30, "quarterly": 90}.get(briefing_type, 7)
+        start_date, end_date = now - timedelta(days=days), now
     if start_date > end_date:
-        return {
-            "status": "failed",
-            "reason": "invalid_time_range",
-            "detail": "from_date must be earlier than or equal to to_date",
-        }
+        return {"status": "failed", "reason": "invalid_time_range", "detail": "from_date must be earlier than or equal to to_date"}
 
-    time_range_str = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
+    time_range = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
+    title_prefix = {
+        "weekly": "AI技术趋势周报",
+        "monthly": "AI技术趋势月报",
+        "quarterly": "AI技术趋势季报",
+        "topic": "AI技术趋势专题报告",
+    }.get(briefing_type, "AI技术趋势专题报告")
+    title = f"{title_prefix}（{time_range}）"
+
+    logger.info("====== 简报生成任务开始 ======")
+    logger.info("briefing_type=%s, time_range=%s", briefing_type, time_range)
 
     session = get_session()
     try:
-        # 查询数据
-        articles = _query_articles(session, start_date, end_date)
+        candidates = _query_articles(session, start_date, end_date)
         insights = _query_insights(session, start_date, end_date)
+        if not candidates:
+            return {"status": "skipped", "reason": "no_new_articles", "time_range": time_range}
 
-        if not articles and not insights:
-            logger.info("时间范围内无新文章，跳过简报生成")
-            return {
-                "status": "skipped",
-                "reason": "no_new_articles",
-                "time_range": time_range_str,
-            }
+        selector = BriefingSelector(InternalConfig.get_instance().briefing_selection_config)
+        topics, selection_metadata = selector.select(candidates, briefing_type)
+        if not topics:
+            return {"status": "skipped", "reason": "no_qualified_articles", "time_range": time_range}
 
-        # 格式化输入
-        articles_text = _format_articles_list(articles)
-        insights_text = _format_insights_list(insights)
-
-        # 构建 Prompt
-        # TODO: 从配置文件加载 prompt 模板（当前硬编码占位）
-        system_prompt = (
-            "你是信息技术部架构委员会的技术简报编辑。基于近期外部 AI 技术资讯的分析结果，"
-            "生成一份面向全公司或全部门阅读的 AI 技术趋势雷达文章。文章的主要作用是像雷达一样"
-            "扫描并呈现外部 AI 技术资讯，帮助读者了解近期出现了哪些技术内容、它们解决什么问题、"
-            "具体做了什么以及大致如何实现。风格要求：专业、精炼、客观，避免过度主观发挥，"
-            "也避免写成项目建议书、风险清单、任务分解或会议纪要。"
+        selected_article_ids = {
+            article["id"] for topic in topics for article in topic["articles"]
+        }
+        selected_insights = [
+            insight for insight in insights if insight["article_id"] in selected_article_ids
+        ]
+        system_prompt, user_prompt, prompt_version = _render_briefing_prompt(
+            briefing_type,
+            time_range,
+            _format_topics(topics),
+            _format_insights(insights, selected_article_ids),
         )
-        type_cn = {"weekly": "周报", "monthly": "月报", "quarterly": "季报", "topic": "专题报告"}
-        user_prompt = (
-            f"请根据以下近期采集和分析的 AI 技术资讯，生成一份{type_cn.get(briefing_type, '技术趋势')}简报。\n\n"
-            f"【覆盖时间】{time_range_str}\n\n"
-            f"【收录文章（按价值评分降序前 {len(articles)} 篇）】\n{articles_text}\n\n"
-            f"【深度洞察文章（{len(insights)} 篇）】\n{insights_text}\n\n"
-            "请按以下结构组织简报，面向全公司/全部门统一阅读，不要按读者身份拆分栏目，"
-            "不要写成具体决策事项、实施计划、风险清单或行动任务：\n"
-            "1. 雷达概览（用 1-2 段客观概括本期收集到的资讯范围、主要技术类别和信息密度）\n"
-            "2. 技术资讯分类摘要（正文主体，按技术类别组织，如大模型、Agent、RAG、推理优化、多模态、AI工程系统、安全与治理等；每类说明本期收集到哪些内容）\n"
-            "3. 重点资讯条目（选择高价值或有代表性的资讯逐条展开。每个条目使用一个自然标题和 1-2 个自然段，"
-            "不要在条目内部使用“解决的问题”“具体做了什么”“大致实现方式”等固定小标题）\n"
-            "4. 共性问题与方法归纳（仅基于已收集资讯，归纳这些文章共同关注的问题和常见技术做法，不做过度推演）\n"
-            "5. 信号源索引（标题、来源、评分、链接）\n\n"
-            "重点资讯条目的写法要求：\n"
-            "- 技术方案、模型发布、工程实践类文章，要在自然段落中自然交代其面对的问题、发布或提出了什么、"
-            "大致采用了什么技术路径或工程做法；这些信息应融入正文，不要拆成纪要式字段。\n"
-            "- 产品发布、行业动态、投融资并购、政策监管、观点分析、案例实践等非技术方案类文章，"
-            "按其资讯类型选择合适叙述重点，例如发布了什么、影响哪个生态或市场、涉及什么监管或治理变化、"
-            "体现了什么业务应用方式；不要强行套用技术文章的三段式结构。\n"
-            "- 每个重点条目末尾保留原文链接或来源引用，便于读者继续阅读。\n\n"
-            "格式：Markdown。正文以技术资讯事实和归纳为主，少写主观判断；涉及总结时必须能从输入文章中找到依据。"
-        )
+        if not system_prompt or not user_prompt:
+            return {"status": "failed", "reason": "briefing_prompt_unavailable"}
 
-        # 调用内部大模型
-        briefing_content = _call_internal_llm(system_prompt, user_prompt)
-        if not briefing_content:
+        content = _call_internal_llm(system_prompt, user_prompt)
+        if not content:
             return {"status": "failed", "reason": "internal_llm_unavailable"}
 
-        # 写入 MySQL 元数据和正文
-        title = f"{title_prefix}（{time_range_str}）"
         draft = BriefingDraft(
             briefing_type=briefing_type,
             title=title,
-            content=briefing_content,
+            content=content,
             time_range_start=start_date,
             time_range_end=end_date,
-            related_article_ids=json.dumps([a["id"] for a in articles]),
-            related_insight_ids=json.dumps([i.get("id", 0) for i in insights]),
+            related_article_ids=sorted(selected_article_ids),
+            related_insight_ids=[item["id"] for item in selected_insights],
             review_status="pending",
         )
         session.add(draft)
         session.commit()
 
-        # 生成 Markdown 文件（供 EIPLite 上传）
-        md_content = generate_briefing(
+        generate_briefing(
             title=title,
             briefing_type=briefing_type,
-            content=briefing_content,
+            content=content,
             time_range_start=start_date,
             time_range_end=end_date,
         )
-
-        logger.info("简报生成成功: title=%s, content_length=%d", title, len(briefing_content))
-
+        selection_metadata["prompt_version"] = prompt_version
+        _persist_selection_metadata(title, selection_metadata)
+        logger.info(
+            "简报生成成功: title=%s, candidates=%d, topics=%d, content_length=%d",
+            title,
+            len(candidates),
+            len(topics),
+            len(content),
+        )
         return {
             "status": "success",
             "briefing_type": briefing_type,
             "title": title,
-            "time_range": time_range_str,
-            "articles_count": len(articles),
-            "insights_count": len(insights),
-            "content_length": len(briefing_content),
-            "md_preview": md_content[:500] + "..." if len(md_content) > 500 else md_content,
+            "time_range": time_range,
+            "articles_count": len(selected_article_ids),
+            "insights_count": len(selected_insights),
+            "content_length": len(content),
+            "md_preview": content[:500] + "..." if len(content) > 500 else content,
         }
-
-    except Exception as e:
+    except Exception as exc:
         session.rollback()
         logger.exception("简报生成失败")
-        return {"status": "failed", "reason": str(e)[:500]}
+        return {"status": "failed", "reason": str(exc)[:500]}
     finally:
         session.close()
-
