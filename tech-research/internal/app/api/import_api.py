@@ -8,7 +8,7 @@ POST /api/v1/radar/import
 
 - 参数校验与幂等判断
 
-- MySQL 写入（6 张表）
+- MySQL 写入（业务数据与批次运营统计）
 
 - Markdown 文件生成
 
@@ -38,7 +38,7 @@ from db.models import (
 
     get_session, Source, ImportBatch, Article, ArticleAnalysis,
 
-    DeepInsight, BriefingDraft, KbMapping
+    DeepInsight, BriefingDraft, KbMapping, PipelineOperation
 
 )
 
@@ -150,6 +150,23 @@ class InsightItem(BaseModel):
 
     prompt_version: Optional[str] = Field(None, description="Prompt 版本")
 
+
+class OperationMetrics(BaseModel):
+
+    """单次采集分析批次的阶段运营统计"""
+
+    batch_time: Optional[str] = Field(None, description="采集批次时间 ISO 8601")
+    l1_article_count: int = Field(0, ge=0, description="L1 候选文章数")
+    l1_source_distribution: Dict[str, int] = Field(default_factory=dict)
+    l2_article_count: int = Field(0, ge=0, description="L2 筛选后文章数")
+    l2_source_distribution: Dict[str, int] = Field(default_factory=dict)
+    l2_category_distribution: Dict[str, int] = Field(default_factory=dict)
+    l3_article_count: int = Field(0, ge=0, description="L3 入选文章数")
+    l3_source_distribution: Dict[str, int] = Field(default_factory=dict)
+    l3_category_distribution: Dict[str, int] = Field(default_factory=dict)
+    stage_detail: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ImportRequest(BaseModel):
 
     """受控导入请求体"""
@@ -161,6 +178,10 @@ class ImportRequest(BaseModel):
     analyses: Optional[List[AnalysisItem]] = Field(default_factory=list)
 
     insights: Optional[List[InsightItem]] = Field(default_factory=list)
+
+    operation_metrics: Optional[OperationMetrics] = Field(
+        None, description="可选的 L1/L2/L3 阶段运营统计"
+    )
 
     @validator("batch")
 
@@ -311,6 +332,31 @@ async def handle_import(request: Request, body: ImportRequest):
             session.add(batch)
 
         session.flush()  # 获取 batch.id
+
+        # 2.1 写入阶段运营统计；可选字段保证旧版导入请求继续兼容。
+        if body.operation_metrics:
+            metrics = body.operation_metrics
+            operation = session.query(PipelineOperation).filter(
+                PipelineOperation.batch_no == body.batch.batch_no
+            ).first()
+            if operation is None:
+                operation = PipelineOperation(
+                    import_batch_id=batch.id,
+                    batch_no=body.batch.batch_no,
+                    batch_time=_parse_iso(metrics.batch_time) or datetime.now(),
+                )
+                session.add(operation)
+            operation.import_batch_id = batch.id
+            operation.batch_time = _parse_iso(metrics.batch_time) or operation.batch_time
+            operation.l1_article_count = metrics.l1_article_count
+            operation.l1_source_distribution = metrics.l1_source_distribution
+            operation.l2_article_count = metrics.l2_article_count
+            operation.l2_source_distribution = metrics.l2_source_distribution
+            operation.l2_category_distribution = metrics.l2_category_distribution
+            operation.l3_article_count = metrics.l3_article_count
+            operation.l3_source_distribution = metrics.l3_source_distribution
+            operation.l3_category_distribution = metrics.l3_category_distribution
+            operation.stage_detail = metrics.stage_detail
 
         # 3. 写入 articles
 

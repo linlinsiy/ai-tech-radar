@@ -37,6 +37,7 @@ class L2Analyzer:
         self, llm: LLMClient, prompts: PromptRegistry,
         max_concurrency: int = 3, model_name: str = "gpt-4o-mini",
         source_profiles: Optional[Dict[str, Dict[str, str]]] = None,
+        deep_analysis_min_score: float = 7.0,
     ):
         """
         初始化 L2 分析器
@@ -51,6 +52,7 @@ class L2Analyzer:
         self.max_concurrency = max_concurrency
         self.model_name = model_name
         self.source_profiles = source_profiles or {}
+        self.deep_analysis_min_score = deep_analysis_min_score
         # 从 prompt 配置获取分类候选列表
         tmpl = prompts.get("l2_summary")
         self.categories = (tmpl or {}).get("categories", "")
@@ -177,7 +179,7 @@ class L2Analyzer:
         value_score = sum(scores.values()) / len(scores) if scores else 0.0
         need_deep_analysis = parsed.get("need_deep_analysis")
         if need_deep_analysis is None:
-            need_deep_analysis = value_score >= 8.0
+            need_deep_analysis = value_score >= self.deep_analysis_min_score
 
         analysis = {
             "title_cn": str(parsed.get("title_cn") or article.title or "").strip(),

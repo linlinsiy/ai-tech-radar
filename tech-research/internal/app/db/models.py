@@ -44,6 +44,27 @@ class ImportBatch(Base):
     error_summary = Column(Text, comment="错误摘要")
 
 
+class PipelineOperation(Base):
+    """各采集分析阶段运营统计 - ai_radar_pipeline_operation"""
+    __tablename__ = "ai_radar_pipeline_operation"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    import_batch_id = Column(BigInteger, nullable=False, unique=True, comment="导入批次 ID")
+    batch_no = Column(String(64), nullable=False, unique=True, comment="批次号")
+    batch_time = Column(DateTime, nullable=False, comment="采集批次时间")
+    l1_article_count = Column(Integer, nullable=False, default=0, comment="L1 候选文章数")
+    l1_source_distribution = Column(JSON, comment="L1 来源数量分布")
+    l2_article_count = Column(Integer, nullable=False, default=0, comment="L2 筛选后文章数")
+    l2_source_distribution = Column(JSON, comment="L2 来源数量分布")
+    l2_category_distribution = Column(JSON, comment="L2 分类数量分布")
+    l3_article_count = Column(Integer, nullable=False, default=0, comment="L3 入选文章数")
+    l3_source_distribution = Column(JSON, comment="L3 来源数量分布")
+    l3_category_distribution = Column(JSON, comment="L3 分类数量分布")
+    stage_detail = Column(JSON, comment="候选、补采、失败等扩展阶段指标")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
+
+
 class Article(Base):
     """外部文章 - ai_radar_article"""
     __tablename__ = "ai_radar_article"

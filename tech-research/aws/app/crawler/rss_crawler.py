@@ -72,7 +72,9 @@ class RSSCrawler(BaseCrawler):
         super().__init__(source)
         self.timeout = _safe_int(source.get("timeout_seconds"), 20)
         # 仅作为异常 Feed 的技术保护，不参与最终报告来源均衡。
-        self.max_articles = _safe_int(source.get("max_articles"), 100)
+        self.max_articles = _safe_int(
+            source.get("_candidate_limit", source.get("max_articles")), 100
+        )
 
     def _request_feed(self, url: str):
         """请求 RSS URL，统一设置浏览器 UA、超时和重定向。"""

@@ -108,5 +108,20 @@ class DedupManager:
     def mark_processed(self, article: 'RawArticle'):
         """标记单篇文章为已处理（用于重试场景）"""
         self._hashes.add(article.url_hash)
+        if article.content_hash:
+            self._content_hashes.add(article.content_hash)
         self._save()
+
+    def mark_processed_batch(self, articles: List['RawArticle']):
+        """在 L2 成功后批量提交去重状态，失败文章保留重试机会。"""
+        for article in articles:
+            self._hashes.add(article.url_hash)
+            if article.content_hash:
+                self._content_hashes.add(article.content_hash)
+        if articles:
+            self._save()
+
+    def is_content_duplicate(self, article: 'RawArticle') -> bool:
+        """检查正文指纹是否已处理。"""
+        return bool(article.content_hash and article.content_hash in self._content_hashes)
 

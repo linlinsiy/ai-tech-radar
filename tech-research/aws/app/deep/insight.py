@@ -1,7 +1,7 @@
 """
 L3 深度洞察编排
 
-对高价值文章（value_score >= 8 且有 full_content）执行深度分析。
+对高价值文章（默认 value_score >= 7 且有 full_content）执行深度分析。
 需要先获取文章全文，再调用高质量模型生成五维度洞察。
 并发 ≤ 1，确保高质量模型调用不冲突。
 """
@@ -38,6 +38,7 @@ class L3Analyzer:
         min_score: float = 8.0, require_full_content: bool = True,
         model_name: str = "gpt-4o", browser_fallback: bool = False,
         browser_timeout_seconds: int = 45,
+        browser_executable_path: str = "",
     ):
         """
         初始化 L3 分析器
@@ -54,7 +55,10 @@ class L3Analyzer:
         self.require_full_content = require_full_content
         self.model_name = model_name
         self.browser_fallback = browser_fallback
-        self.browser_fetcher = BrowserFetcher(browser_timeout_seconds)
+        self.browser_fetcher = BrowserFetcher(
+            browser_timeout_seconds,
+            executable_path=browser_executable_path,
+        )
 
     def should_trigger(
         self, l2_result: Dict[str, Any]

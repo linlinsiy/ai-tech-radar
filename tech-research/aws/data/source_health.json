@@ -1,0 +1,258 @@
+{
+  "google-research": {
+    "source_name": "Google Research Blog",
+    "last_status": "empty",
+    "last_article_count": 0,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": null,
+    "consecutive_failures": 1
+  },
+  "openai-blog": {
+    "source_name": "OpenAI Blog",
+    "last_status": "success",
+    "last_article_count": 100,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "deepmind-blog": {
+    "source_name": "Google DeepMind Blog",
+    "last_status": "empty",
+    "last_article_count": 0,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": null,
+    "consecutive_failures": 1
+  },
+  "bair-blog": {
+    "source_name": "BAIR Berkeley AI",
+    "last_status": "success",
+    "last_article_count": 10,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "arxiv-cs-cl": {
+    "source_name": "arXiv cs.CL 计算语言学",
+    "last_status": "empty",
+    "last_article_count": 0,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": null,
+    "consecutive_failures": 1
+  },
+  "langchain-blog": {
+    "source_name": "LangChain Blog",
+    "last_status": "empty",
+    "last_article_count": 0,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": null,
+    "consecutive_failures": 1
+  },
+  "meta-eng": {
+    "source_name": "Meta Engineering Blog",
+    "last_status": "success",
+    "last_article_count": 9,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "aws-ml-blog": {
+    "source_name": "AWS ML Blog",
+    "last_status": "success",
+    "last_article_count": 20,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "huggingface-blog": {
+    "source_name": "HuggingFace Blog",
+    "last_status": "empty",
+    "last_article_count": 0,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": null,
+    "consecutive_failures": 1
+  },
+  "roboflow-blog": {
+    "source_name": "Roboflow CV Blog",
+    "last_status": "success",
+    "last_article_count": 15,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "pyimagesearch": {
+    "source_name": "PyImageSearch",
+    "last_status": "success",
+    "last_article_count": 9,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "nvidia-dev": {
+    "source_name": "NVIDIA Developer Blog",
+    "last_status": "empty",
+    "last_article_count": 0,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": null,
+    "consecutive_failures": 1
+  },
+  "infoq-en": {
+    "source_name": "InfoQ AI/ML（英文）",
+    "last_status": "empty",
+    "last_article_count": 0,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": null,
+    "consecutive_failures": 1
+  },
+  "aliyun-ai-dev": {
+    "source_name": "阿里云 AI 开发者社区",
+    "last_status": "success",
+    "last_article_count": 6,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "last-week-in-ai": {
+    "source_name": "Last Week in AI",
+    "last_status": "success",
+    "last_article_count": 20,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "importai": {
+    "source_name": "Import AI（周报）",
+    "last_status": "empty",
+    "last_article_count": 0,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": null,
+    "consecutive_failures": 1
+  },
+  "lesswrong": {
+    "source_name": "LessWrong（AI Alignment）",
+    "last_status": "success",
+    "last_article_count": 10,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "alignment-forum": {
+    "source_name": "AI Alignment Forum",
+    "last_status": "success",
+    "last_article_count": 3,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "arxiv-cs-ai": {
+    "source_name": "arXiv cs.AI",
+    "last_status": "empty",
+    "last_article_count": 0,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": null,
+    "consecutive_failures": 1
+  },
+  "ai-weekly": {
+    "source_name": "AI Weekly",
+    "last_status": "success",
+    "last_article_count": 20,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "karpathy": {
+    "source_name": "Andrej Karpathy Blog",
+    "last_status": "success",
+    "last_article_count": 10,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "simon-willison": {
+    "source_name": "Simon Willison",
+    "last_status": "success",
+    "last_article_count": 30,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "stratechery": {
+    "source_name": "Stratechery（科技战略）",
+    "last_status": "success",
+    "last_article_count": 10,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "ars-technica": {
+    "source_name": "Ars Technica AI",
+    "last_status": "success",
+    "last_article_count": 20,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "qbitai": {
+    "source_name": "量子位",
+    "last_status": "success",
+    "last_article_count": 7,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "36kr-ai": {
+    "source_name": "36氪 AI 频道",
+    "last_status": "success",
+    "last_article_count": 20,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "tmtpost": {
+    "source_name": "钛媒体",
+    "last_status": "success",
+    "last_article_count": 16,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "infoq-cn": {
+    "source_name": "InfoQ 中文",
+    "last_status": "success",
+    "last_article_count": 20,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "oschina-ai": {
+    "source_name": "开源中国 AI",
+    "last_status": "success",
+    "last_article_count": 43,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "tencent-cloud-ai": {
+    "source_name": "腾讯云 AI 专栏",
+    "last_status": "success",
+    "last_article_count": 1,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "10jqka-news": {
+    "source_name": "同花顺金融AI",
+    "last_status": "success",
+    "last_article_count": 1,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  },
+  "01caijing-home": {
+    "source_name": "零壹财经金融科技",
+    "last_status": "success",
+    "last_article_count": 6,
+    "last_checked_at": "2026-07-15T17:54:45.005911",
+    "last_success_at": "2026-07-15T17:54:45.005911",
+    "consecutive_failures": 0
+  }
+}

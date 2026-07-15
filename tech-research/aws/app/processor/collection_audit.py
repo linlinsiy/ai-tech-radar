@@ -23,8 +23,9 @@ class CollectionAudit:
         article_count: int,
         status: str,
         error: str = "",
+        details: Dict = None,
     ):
-        self.sources.append({
+        record = {
             "source_code": source.get("code", ""),
             "source_name": source.get("name", ""),
             "category": source.get("category", ""),
@@ -32,7 +33,10 @@ class CollectionAudit:
             "article_count": article_count,
             "status": status,
             "error": error[:500],
-        })
+        }
+        if details:
+            record.update(details)
+        self.sources.append(record)
 
     def save(self, articles: List[Dict], stats: Dict):
         audit_dir = os.path.join(self.data_dir, "collection_audit")
@@ -47,6 +51,20 @@ class CollectionAudit:
         }
         self._write_json(os.path.join(audit_dir, f"{self.batch_no}.json"), payload)
         self._update_health()
+
+    def save_candidate_pool(self, candidates: List[Dict]):
+        """保存未读取正文的候选元数据，供覆盖核对和后续重跑参考。"""
+        candidate_dir = os.path.join(self.data_dir, "candidate_pool")
+        os.makedirs(candidate_dir, exist_ok=True)
+        payload = {
+            "batch_no": self.batch_no,
+            "saved_at": datetime.now().isoformat(),
+            "candidates": candidates,
+        }
+        self._write_json(
+            os.path.join(candidate_dir, f"{self.batch_no}.json"),
+            payload,
+        )
 
     def _update_health(self):
         path = os.path.join(self.data_dir, "source_health.json")

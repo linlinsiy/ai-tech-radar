@@ -88,6 +88,25 @@ class BriefingSelectorTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(len(selected[0]["articles"]), 2)
 
+    def test_all_major_events_expand_report_target(self):
+        candidates = [
+            article(
+                1, "official", "大模型基础技术", "模型发布", 9,
+                trend=9.5, credibility=9, title="Alpha model official release",
+            ),
+            article(
+                2, "official", "AI基础设施", "产品发布", 9,
+                trend=9.4, credibility=9, title="Inference platform major launch",
+            ),
+        ]
+
+        selected, metadata = BriefingSelector({
+            **self.config, "target_weekly": 1,
+        }).select(candidates, "weekly")
+
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(metadata["selection_capacity"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

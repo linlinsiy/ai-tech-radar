@@ -1,7 +1,7 @@
 ﻿-- ============================================================
 -- AI技术趋势雷达 - 内部业务数据库 DDL
 -- 数据库：ai_radar
--- 表数量：7
+-- 表数量：8
 -- 生成日期：2026-06-12
 -- ============================================================
 
@@ -55,7 +55,34 @@ CREATE TABLE ai_radar_import_batch (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='导入批次';
 
 -- ============================================================
--- 3. ai_radar_article - 外部文章基础信息
+-- 3. ai_radar_pipeline_operation - 采集分析运营过程
+-- 每个批次一行，记录 L1/L2/L3 数量及来源、分类分布
+-- ============================================================
+DROP TABLE IF EXISTS ai_radar_pipeline_operation;
+CREATE TABLE ai_radar_pipeline_operation (
+  id                        BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键',
+  import_batch_id           BIGINT      NOT NULL                COMMENT '导入批次 ID',
+  batch_no                  VARCHAR(64) NOT NULL                COMMENT '采集批次号',
+  batch_time                DATETIME    NOT NULL                COMMENT '采集批次时间',
+  l1_article_count          INT         NOT NULL DEFAULT 0      COMMENT 'L1 候选文章数',
+  l1_source_distribution    JSON                                COMMENT 'L1 来源数量分布',
+  l2_article_count          INT         NOT NULL DEFAULT 0      COMMENT 'L2 筛选后文章数',
+  l2_source_distribution    JSON                                COMMENT 'L2 来源数量分布',
+  l2_category_distribution  JSON                                COMMENT 'L2 分类数量分布',
+  l3_article_count          INT         NOT NULL DEFAULT 0      COMMENT 'L3 入选文章数',
+  l3_source_distribution    JSON                                COMMENT 'L3 来源数量分布',
+  l3_category_distribution  JSON                                COMMENT 'L3 分类数量分布',
+  stage_detail              JSON                                COMMENT '候选、补采、失败等扩展阶段指标',
+  created_at                DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at                DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (id),
+  UNIQUE INDEX uk_pipeline_batch_no (batch_no),
+  UNIQUE INDEX uk_pipeline_import_batch_id (import_batch_id),
+  INDEX idx_pipeline_batch_time (batch_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='采集分析运营过程';
+
+-- ============================================================
+-- 4. ai_radar_article - 外部文章基础信息
 -- 记录采集到的外部文章基础信息，幂等去重依赖 url_hash 和 content_hash
 -- ============================================================
 DROP TABLE IF EXISTS ai_radar_article;
@@ -83,7 +110,7 @@ CREATE TABLE ai_radar_article (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='外部文章基础信息';
 
 -- ============================================================
--- 4. ai_radar_article_analysis - 文章分析结果
+-- 5. ai_radar_article_analysis - 文章分析结果
 -- 记录模型生成的摘要、分类、标签、评分等结构化分析结果
 -- ============================================================
 DROP TABLE IF EXISTS ai_radar_article_analysis;
@@ -113,8 +140,8 @@ CREATE TABLE ai_radar_article_analysis (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文章分析结果';
 
 -- ============================================================
--- 5. ai_radar_deep_insight - 深度洞察
--- 仅对高价值文章（value_score >= 8 且有 full_content）生成
+-- 6. ai_radar_deep_insight - 深度洞察
+-- 仅对高价值文章（value_score >= 7 且有 full_content）生成
 -- 用于入知识库和简报复用
 -- ============================================================
 DROP TABLE IF EXISTS ai_radar_deep_insight;
@@ -135,7 +162,7 @@ CREATE TABLE ai_radar_deep_insight (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='深度洞察';
 
 -- ============================================================
--- 6. ai_radar_briefing_draft - 简报草稿
+-- 7. ai_radar_briefing_draft - 简报草稿
 -- 保存系统生成的周报、月报、专题报告草稿元数据
 -- 正文仅存入 EIPLite 知识库，MySQL 不存储正文
 -- ============================================================
@@ -157,7 +184,7 @@ CREATE TABLE ai_radar_briefing_draft (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='简报草稿';
 
 -- ============================================================
--- 7. ai_radar_kb_mapping - 知识库文件映射
+-- 8. ai_radar_kb_mapping - 知识库文件映射
 -- 记录 MySQL 业务记录与 EIPLite 知识库文件的对应关系
 -- 用于排障、溯源和重新入库
 -- ============================================================
@@ -198,3 +225,6 @@ INSERT INTO ai_radar_source (source_code, source_name, source_type, access_url, 
 ('hackernews',       'Hacker News',      'tech_community',      'https://news.ycombinator.com/rss',     'news.ycombinator.com', 1),
 ('huggingface',      'HuggingFace Blog', 'vendor_blog',         'https://huggingface.co/blog/feed.xml', 'huggingface.co',      1),
 ('arxiv-cs-ai',      'arXiv cs.AI',      'academic',            'https://arxiv.org/rss/cs.AI',          'arxiv.org',           1);
+
+ALTER TABLE ai_radar_article MODIFY COLUMN `raw_summary` TEXT COMMENT '原始摘要内容';
+-- 如果需要存储更长内容可以用MEDIUMTEXT/LONGTEXT，足够存储万字以上内容

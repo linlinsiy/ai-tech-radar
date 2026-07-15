@@ -43,6 +43,9 @@ class RawArticle:
     raw_html: Optional[str] = None
     raw_summary: Optional[str] = None
     content_hash: Optional[str] = None
+    predicted_category: Optional[str] = None
+    possible_major_event: bool = False
+    candidate_score: float = 0.0
 
     def __post_init__(self):
         """自动计算 url_hash"""
@@ -98,6 +101,14 @@ class BaseCrawler(ABC):
         出参：RawArticle 列表，采集失败返回空列表
         """
         ...
+
+    def discover_candidates(self) -> List[RawArticle]:
+        """发现候选文章；不支持分阶段采集的实现直接返回完整采集结果。"""
+        return self.fetch()
+
+    def fetch_candidates(self, candidates: List[RawArticle]) -> List[RawArticle]:
+        """补充候选正文；RSS/API 等已携带内容的实现可直接返回候选。"""
+        return candidates
 
     def validate_domain(self, url: str, allowed_domains: List[str]) -> bool:
         """

@@ -188,6 +188,50 @@ class AWSConfig:
         val = self.get(option="deep_insight.require_full_content", fallback="true")
         return val.lower() == "true"
 
+    @property
+    def candidate_pool_config(self) -> Dict:
+        """正文读取前的来源候选池和分类补采配置。"""
+        return {
+            "candidate_limit_per_source": self.get_int(
+                "candidate_pool.max_candidates_per_source", 100
+            ),
+            "initial_scored_per_source": self.get_int(
+                "candidate_pool.initial_scored_per_source", 50
+            ),
+            "refill_min_per_category": self.get_int(
+                "candidate_pool.refill_min_per_category", 2
+            ),
+            "refill_max_per_category": self.get_int(
+                "candidate_pool.refill_max_per_category", 10
+            ),
+            "min_scoring_content_chars": self.get_int(
+                "candidate_pool.min_scoring_content_chars", 100
+            ),
+        }
+
+    @property
+    def l3_selection_config(self) -> Dict:
+        """L3 前置主题聚合和来源均衡配置。"""
+        return {
+            "enabled": self.get(option="l3_selection.enabled", fallback="true").lower() == "true",
+            "max_candidates_per_batch": self.get_int("l3_selection.max_candidates_per_batch", 36),
+            "max_candidates_per_source": self.get_int("l3_selection.max_candidates_per_source", 3),
+            "max_source_ratio": self.get_float("l3_selection.max_source_ratio", 0.2),
+            "max_category_ratio": self.get_float("l3_selection.max_category_ratio", 0.35),
+            "topic_similarity_threshold": self.get_float(
+                "l3_selection.topic_similarity_threshold", 0.34
+            ),
+            "max_major_event_exceptions": self.get_int(
+                "l3_selection.max_major_event_exceptions", 0
+            ),
+            "min_sources_for_balance": self.get_int(
+                "l3_selection.min_sources_for_balance", 3
+            ),
+            "min_categories_for_balance": self.get_int(
+                "l3_selection.min_categories_for_balance", 2
+            ),
+        }
+
     # === 日志配置 ===
 
     @property
@@ -216,10 +260,15 @@ class AWSConfig:
     @property
     def browser_fallback_config(self) -> Dict:
         """普通 HTTP 采集失败时的 Headless Chromium 降级配置。"""
+        executable_path = self.get(
+            option="browser_fallback.executable_path",
+            fallback="",
+        ).strip() or os.environ.get("PLAYWRIGHT_BROWSER_EXECUTABLE_PATH", "").strip()
         return {
             "enabled": self.get(option="browser_fallback.enabled", fallback="false").lower() == "true",
             "timeout_seconds": self.get_int("browser_fallback.timeout_seconds", 45),
             "min_content_chars": self.get_int("browser_fallback.min_content_chars", 300),
+            "executable_path": os.path.expandvars(executable_path),
         }
 
     @property
@@ -276,6 +325,7 @@ class AWSConfig:
                 "_browser_fallback_enabled": str(self.browser_fallback_config["enabled"]).lower(),
                 "_browser_timeout_seconds": str(self.browser_fallback_config["timeout_seconds"]),
                 "_browser_min_content_chars": str(self.browser_fallback_config["min_content_chars"]),
+                "_browser_executable_path": self.browser_fallback_config["executable_path"],
             },
         }
 

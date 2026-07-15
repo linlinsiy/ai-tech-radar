@@ -58,6 +58,7 @@ class ImportClient:
         articles: List[Dict[str, Any]],
         analyses: List[Dict[str, Any]],
         insights: List[Dict[str, Any]],
+        operation_metrics: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         构建受控导入请求体
@@ -81,6 +82,8 @@ class ImportClient:
             "analyses": analyses,
             "insights": insights,
         }
+        if operation_metrics is not None:
+            payload["operation_metrics"] = operation_metrics
         return payload
 
     def import_batch(self, payload: Dict[str, Any]) -> Dict[str, Any]:

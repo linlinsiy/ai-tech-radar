@@ -15,8 +15,12 @@ class BrowserFetcher:
     _lock = threading.Lock()
     _dependency_warning_emitted = False
 
-    def __init__(self, timeout_seconds: int = 45):
+    def __init__(self, timeout_seconds: int = 45, executable_path: str = ""):
         self.timeout_ms = max(1, timeout_seconds) * 1000
+        self.executable_path = (
+            executable_path.strip()
+            or os.environ.get("PLAYWRIGHT_BROWSER_EXECUTABLE_PATH", "").strip()
+        )
 
     def fetch_html(self, url: str) -> Optional[str]:
         try:
@@ -33,7 +37,16 @@ class BrowserFetcher:
             context = None
             try:
                 with sync_playwright() as playwright:
-                    browser = playwright.chromium.launch(headless=True)
+                    launch_options = {"headless": True}
+                    if self.executable_path:
+                        if os.path.isfile(self.executable_path):
+                            launch_options["executable_path"] = self.executable_path
+                        else:
+                            logger.warning(
+                                "配置的浏览器执行文件不存在，将尝试 Playwright 自带 Chromium: %s",
+                                self.executable_path,
+                            )
+                    browser = playwright.chromium.launch(**launch_options)
                     context = browser.new_context(
                         locale="zh-CN",
                         user_agent=(
@@ -53,7 +66,9 @@ class BrowserFetcher:
             except PlaywrightTimeoutError:
                 logger.warning("浏览器降级请求超时: %s", url)
             except Exception as exc:
-                browser_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "default")
+                browser_path = self.executable_path or os.environ.get(
+                    "PLAYWRIGHT_BROWSERS_PATH", "default"
+                )
                 logger.warning(
                     "浏览器降级请求失败: url=%s, browsers_path=%s, error=%s",
                     url,

@@ -73,6 +73,8 @@ class BriefingSelector:
         candidates.sort(key=lambda item: item["report_rank_score"], reverse=True)
 
         topics = self._cluster(candidates)
+        major_topics = [topic for topic in topics if topic["must_include"]]
+        selection_capacity = max(target, len(major_topics))
         max_source = max(
             1,
             min(
@@ -97,7 +99,7 @@ class BriefingSelector:
 
         def add(topic: Dict, bypass_limits: bool = False) -> bool:
             topic_id = topic["topic_id"]
-            if topic_id in selected_ids or len(selected) >= target:
+            if topic_id in selected_ids or len(selected) >= selection_capacity:
                 return False
             source = topic["primary"]["source_code"]
             category = topic["category"]
@@ -113,9 +115,8 @@ class BriefingSelector:
             return True
 
         # Major official events are never dropped solely because a source reached its soft limit.
-        for topic in topics:
-            if topic["must_include"]:
-                add(topic, bypass_limits=True)
+        for topic in major_topics:
+            add(topic, bypass_limits=True)
 
         for lane, lane_target in lane_targets.items():
             current = sum(1 for topic in selected if topic["lane"] == lane)
@@ -142,6 +143,7 @@ class BriefingSelector:
             "candidate_topics": len(topics),
             "selected_topics": len(selected),
             "target_topics": target,
+            "selection_capacity": selection_capacity,
             "source_counts": dict(source_counts),
             "category_counts": dict(category_counts),
             "lane_counts": dict(Counter(topic["lane"] for topic in selected)),
@@ -178,12 +180,20 @@ class BriefingSelector:
             enriched["lane"] = "research"
         else:
             enriched["lane"] = "industry"
-        enriched["must_include"] = (
+        major_release = (
             info_type in MAJOR_EVENT_TYPES
             and _number(article.get("score_trend")) >= 9.0
             and _number(article.get("score_credibility")) >= 8.0
             and enriched["value_score"] >= 7.0
         )
+        engineering_breakthrough = (
+            info_type in ENGINEERING_TYPES
+            and _number(article.get("score_engineering")) >= 9.0
+            and _number(article.get("score_trend")) >= 8.5
+            and _number(article.get("score_credibility")) >= 8.0
+            and enriched["value_score"] >= 7.0
+        )
+        enriched["must_include"] = major_release or engineering_breakthrough
         enriched["terms"] = self._terms(enriched)
         return enriched
 

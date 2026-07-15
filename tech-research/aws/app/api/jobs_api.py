@@ -12,6 +12,7 @@ import logging
 import json
 from typing import Optional
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from logging_config import get_logger
 logger = get_logger("api.jobs")
@@ -86,7 +87,8 @@ async def trigger_collect(request: CollectJobRequest):
 
     try:
         from jobs.collect_job import handle_collect_job
-        result = handle_collect_job(params_str)
+        # 采集链路包含 requests 和 Playwright 同步 API，必须离开 asyncio 事件循环线程。
+        result = await run_in_threadpool(handle_collect_job, params_str)
         return {"success": True, "data": result}
     except Exception as e:
         logger.exception("采集分析执行异常")
@@ -109,7 +111,7 @@ async def trigger_health_check():
 
     try:
         from jobs.health_check_job import handle_health_check_job
-        result = handle_health_check_job()
+        result = await run_in_threadpool(handle_health_check_job)
         return {"success": True, "data": result}
     except Exception as e:
         logger.exception("健康检查执行异常")

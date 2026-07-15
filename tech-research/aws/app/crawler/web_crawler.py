@@ -211,7 +211,13 @@ class WebCrawler(BaseCrawler):
         self.source = source
         self.timeout = _safe_int(source.get("timeout_seconds", ""), 20)
         self.max_pages = _safe_int(source.get("max_pages", ""), 1)
-        self.max_articles = _safe_int(source.get("max_articles", ""), 30)
+        self.max_articles = _safe_int(
+            source.get("_detail_limit", source.get("max_articles", "")), 30
+        )
+        self.candidate_limit = _safe_int(
+            source.get("_candidate_limit", source.get("max_articles", "")),
+            self.max_articles,
+        )
         self.request_interval = _safe_float(source.get("request_interval_seconds", ""), 1.0)
         self.page_url_pattern = source.get("page_url_pattern", "").strip()
 
@@ -247,34 +253,58 @@ class WebCrawler(BaseCrawler):
             source.get("_browser_min_content_chars", ""), 300
         )
         self.browser_fetcher = BrowserFetcher(
-            timeout_seconds=_safe_int(source.get("_browser_timeout_seconds", ""), 45)
+            timeout_seconds=_safe_int(source.get("_browser_timeout_seconds", ""), 45),
+            executable_path=source.get("_browser_executable_path", ""),
         )
 
         self.session = requests.Session()
 
     def fetch(self) -> List[RawArticle]:
         """执行 HTML 采集，返回标准 RawArticle 列表。"""
+        candidates = self.discover_candidates()
+        return self.fetch_candidates(candidates[: self.max_articles])
+
+    def discover_candidates(self) -> List[RawArticle]:
+        """只解析列表元数据，不请求文章详情页。"""
         if not self.access_url:
             logger.warning("[%s] access_url 为空，跳过网页采集", self.source_code)
             return []
 
-        logger.info("[%s] 开始 HTML 采集: %s", self.source_code, self.access_url)
+        logger.info("[%s] 开始 HTML 候选发现: %s", self.source_code, self.access_url)
 
         candidates = self._collect_candidates()
         if not candidates:
             logger.warning("[%s] HTML 列表未解析到候选文章", self.source_code)
             return []
 
-        results: List[RawArticle] = []
-        for candidate in candidates[: self.max_articles]:
-            article = self._build_article(candidate)
-            if article:
-                results.append(article)
-            if self.request_interval > 0:
-                time.sleep(self.request_interval)
-
-        logger.info("[%s] HTML 采集完成: %d 篇", self.source_code, len(results))
+        results = [
+            RawArticle(
+                source_code=self.source_code,
+                title=str(candidate.get("title") or "Untitled"),
+                url=str(candidate.get("url") or ""),
+                author=str(candidate.get("author") or "") or None,
+                publish_time=(
+                    candidate.get("publish_time")
+                    if isinstance(candidate.get("publish_time"), datetime) else None
+                ),
+                raw_summary=str(candidate.get("summary") or "") or None,
+            )
+            for candidate in candidates[: self.candidate_limit]
+            if candidate.get("url")
+        ]
+        logger.info("[%s] HTML 候选发现完成: %d 篇", self.source_code, len(results))
         return results
+
+    def fetch_candidates(self, candidates: List[RawArticle]) -> List[RawArticle]:
+        """读取已选候选的详情页正文。"""
+        items = [{
+            "title": article.title,
+            "url": article.url,
+            "author": article.author or "",
+            "publish_time": article.publish_time,
+            "summary": article.raw_summary or "",
+        } for article in candidates]
+        return self.fetch_urls(items)
 
     def _request_html(self, url: str) -> Optional[str]:
         """请求 HTML 页面，统一使用浏览器 UA。"""
@@ -321,7 +351,7 @@ class WebCrawler(BaseCrawler):
     def fetch_urls(self, candidates: List[Dict[str, object]]) -> List[RawArticle]:
         """抓取已发现的详情页 URL，不重新扫描列表页。"""
         results: List[RawArticle] = []
-        for candidate in candidates[: self.max_articles]:
+        for candidate in candidates:
             url = str(candidate.get("url") or "")
             if not self._is_allowed_article_url(url):
                 continue
@@ -356,7 +386,7 @@ class WebCrawler(BaseCrawler):
                     continue
                 seen_urls.add(url)
                 candidates.append(item)
-                if len(candidates) >= self.max_articles:
+                if len(candidates) >= self.candidate_limit:
                     return candidates
 
             if self.request_interval > 0:
@@ -382,7 +412,7 @@ class WebCrawler(BaseCrawler):
                 candidates.append(item)
 
         # 对结构不稳定页面兜底：直接扫描所有链接。
-        if len(candidates) < min(5, self.max_articles):
+        if len(candidates) < min(5, self.candidate_limit):
             for item in self._candidate_from_links(soup, base_url):
                 candidates.append(item)
 
