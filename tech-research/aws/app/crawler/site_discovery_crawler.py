@@ -226,7 +226,7 @@ class SiteDiscoveryCrawler:
     ) -> List[Dict[str, object]]:
         queue = deque(dict.fromkeys(sitemap_urls))
         visited = set()
-        entries: List[Tuple[str, Optional[datetime]]] = []
+        entries: Dict[str, Optional[datetime]] = {}
 
         while queue and len(visited) < self.max_sitemaps:
             sitemap_url = queue.popleft()
@@ -248,9 +248,16 @@ class SiteDiscoveryCrawler:
                 if last_modified and (last_modified < start or (end and last_modified > end)):
                     continue
                 if self._looks_like_article(url):
-                    entries.append((_normalize_url(url), last_modified))
+                    normalized = _normalize_url(url)
+                    previous = entries.get(normalized)
+                    if normalized not in entries or (last_modified and (not previous or last_modified > previous)):
+                        entries[normalized] = last_modified
 
-        entries.sort(key=lambda item: item[1] or datetime.min, reverse=True)
+        ordered_entries = sorted(
+            entries.items(),
+            key=lambda item: item[1] or datetime.min,
+            reverse=True,
+        )
         return [
             {
                 "url": url,
@@ -259,7 +266,7 @@ class SiteDiscoveryCrawler:
                 "publish_time": None,
                 "author": "",
             }
-            for url, _last_modified in entries[: self.max_urls]
+            for url, _last_modified in ordered_entries[: self.max_urls]
         ]
 
     def _discover_from_links(
@@ -284,7 +291,10 @@ class SiteDiscoveryCrawler:
                 continue
             visited_pages.add(page_url)
             response = self._request(page_url)
-            if response is None or "html" not in response.headers.get("Content-Type", "").lower():
+            if response is None:
+                continue
+            content_type = response.headers.get("Content-Type", "").lower()
+            if "html" not in content_type and "<html" not in response.text[:500].lower():
                 continue
 
             soup = BeautifulSoup(response.text, "lxml")
@@ -325,6 +335,7 @@ class SiteDiscoveryCrawler:
                 allow_redirects=True,
             )
             response.raise_for_status()
+            response.encoding = response.apparent_encoding or response.encoding or "utf-8"
             return response
         except requests.RequestException as exc:
             logger.debug("站内发现请求失败: url=%s, error=%s", url, str(exc))

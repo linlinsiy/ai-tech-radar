@@ -233,9 +233,12 @@ class AWSConfig:
             option="discovery.search.endpoint",
             fallback=self.get(option="discovery.search_endpoint", fallback=""),
         )
+        mode = self.get(option="discovery.mode", fallback="site").strip().lower()
+        if mode not in ("site", "search", "hybrid"):
+            mode = "site"
         return {
             "enabled": self.get(option="discovery.enabled", fallback="false").lower() == "true",
-            "mode": self.get(option="discovery.mode", fallback="site").strip().lower(),
+            "mode": mode,
             "max_sources_per_run": self.get_int("discovery.max_sources_per_run", 9),
             "max_pages_per_source": self.get_int("discovery.max_pages_per_source", 3),
             "max_urls_per_source": self.get_int("discovery.max_urls_per_source", 12),
