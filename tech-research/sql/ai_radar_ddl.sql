@@ -1,6 +1,7 @@
 ﻿-- AI技术趋势雷达数据库表结构
--- 版本: 2026-07-09
--- 修改说明: 新增数据源分类字段category，适配9大分类要求，优化索引结构
+-- 版本: 2026-07-15
+-- 用途: 全新环境完整建库。现有数据库升级请使用 ai_radar_alter_v*.sql。
+-- 修改说明: 对齐当前 L1-L5 流程、九大文章分类和批次运营统计设计。
 
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
@@ -84,7 +85,7 @@ CREATE TABLE `ai_radar_deep_insight` (
   `analysis_status` varchar(32) NOT NULL DEFAULT 'success' COMMENT '分析状态',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`),
-  KEY `idx_article_id` (`article_id`),
+  UNIQUE KEY `uk_article_id` (`article_id`),
   KEY `idx_analysis_status` (`analysis_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='深度洞察结果表';
 
@@ -141,7 +142,7 @@ CREATE TABLE `ai_radar_pipeline_operation` (
 DROP TABLE IF EXISTS `ai_radar_briefing_draft`;
 CREATE TABLE `ai_radar_briefing_draft` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-  `briefing_type` varchar(32) NOT NULL COMMENT '简报类型(daily/weekly/monthly)',
+  `briefing_type` varchar(32) NOT NULL COMMENT '简报类型(weekly/monthly/quarterly/topic)',
   `title` varchar(256) NOT NULL COMMENT '简报标题',
   `content` longtext COMMENT '简报正文',
   `time_range_start` datetime DEFAULT NULL COMMENT '覆盖时间开始',
@@ -202,10 +203,10 @@ CREATE TABLE `ai_radar_source` (
   `source_code` varchar(64) NOT NULL COMMENT '数据源编码',
   `source_name` varchar(128) NOT NULL COMMENT '数据源名称',
   `source_type` varchar(64) DEFAULT NULL COMMENT '数据源分类',
-  `category` varchar(64) DEFAULT NULL COMMENT '内容分类(大模型基础技术/Agent与智能体/多模态技术/AI基础设施/生成式AI应用/安全与伦理/开源生态/行业动态/AI在金融领域应用)',
+  `category` varchar(64) DEFAULT NULL COMMENT '数据源主题提示，仅辅助采集和L2判断，不代表文章最终分类',
   `access_url` varchar(512) DEFAULT NULL COMMENT 'RSS/API/网页地址',
   `domain` varchar(128) DEFAULT NULL COMMENT '访问域名',
-  `fetch_method` varchar(16) NOT NULL DEFAULT 'rss' COMMENT '采集方式(rss/html)',
+  `fetch_method` varchar(16) NOT NULL DEFAULT 'rss' COMMENT '采集方式(rss/web)',
   `enabled` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否启用',
   `last_collect_time` datetime DEFAULT NULL COMMENT '最后采集时间',
   `last_collect_status` varchar(16) DEFAULT NULL COMMENT '最后采集状态(success/failed)',
@@ -290,26 +291,5 @@ INSERT INTO ai_radar_source (source_code, source_name, source_type, category, ac
 -- ============================================================================
 ('10jqka-news',             '同花顺金融AI',                 'industry_application', '金融应用',  'https://news.10jqka.com.cn/',                             'news.10jqka.com.cn',          'web',  1),
 ('01caijing-home',       '零壹财经金融科技',             'industry_application', '金融应用',  'https://www.01caijing.com/',                      'www.01caijing.com',           'web',  1);
--- v2.6: 新增采集分析运营过程表。可在现有数据库上重复执行。
 
-CREATE TABLE IF NOT EXISTS `ai_radar_pipeline_operation` (
-  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-  `import_batch_id` bigint unsigned NOT NULL COMMENT '导入批次ID',
-  `batch_no` varchar(64) NOT NULL COMMENT '采集批次号',
-  `batch_time` datetime NOT NULL COMMENT '采集批次时间',
-  `l1_article_count` int NOT NULL DEFAULT '0' COMMENT 'L1候选文章数',
-  `l1_source_distribution` json DEFAULT NULL COMMENT 'L1来源数量分布',
-  `l2_article_count` int NOT NULL DEFAULT '0' COMMENT 'L2筛选后文章数',
-  `l2_source_distribution` json DEFAULT NULL COMMENT 'L2来源数量分布',
-  `l2_category_distribution` json DEFAULT NULL COMMENT 'L2分类数量分布',
-  `l3_article_count` int NOT NULL DEFAULT '0' COMMENT 'L3入选文章数',
-  `l3_source_distribution` json DEFAULT NULL COMMENT 'L3来源数量分布',
-  `l3_category_distribution` json DEFAULT NULL COMMENT 'L3分类数量分布',
-  `stage_detail` json DEFAULT NULL COMMENT '候选补采失败等扩展阶段指标',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_pipeline_batch_no` (`batch_no`),
-  UNIQUE KEY `uk_pipeline_import_batch_id` (`import_batch_id`),
-  KEY `idx_pipeline_batch_time` (`batch_time`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='采集分析运营过程表';
+SET FOREIGN_KEY_CHECKS = 1;

@@ -2,8 +2,12 @@
 -- AI技术趋势雷达 - 内部业务数据库 DDL
 -- 数据库：ai_radar
 -- 表数量：8
--- 生成日期：2026-06-12
+-- 更新日期：2026-07-15
+-- 说明：表结构与 tech-research/sql/ai_radar_ddl.sql 保持一致；数据源初始化仅在工程脚本维护。
 -- ============================================================
+
+SET NAMES utf8mb4;
+SET FOREIGN_KEY_CHECKS = 0;
 
 -- ============================================================
 -- 部署说明：
@@ -23,13 +27,19 @@ CREATE TABLE ai_radar_source (
   source_code   VARCHAR(64)     NOT NULL                 COMMENT '数据源编码，唯一标识，如 aws-ml-blog、arxiv-cs-ai',
   source_name   VARCHAR(128)    NOT NULL                 COMMENT '数据源名称，如 AWS ML Blog',
   source_type   VARCHAR(64)                             COMMENT '数据源分类：tech_media / vendor_blog / academic / tech_community / research_institute',
+  category      VARCHAR(64)                             COMMENT '数据源主题提示，仅辅助采集和L2判断，不代表文章最终分类',
   access_url    VARCHAR(512)                            COMMENT 'RSS / API / 网页地址',
   domain        VARCHAR(128)                            COMMENT '访问域名',
+  fetch_method  VARCHAR(16)     NOT NULL DEFAULT 'rss'  COMMENT '采集方式：rss / web',
   enabled       TINYINT         NOT NULL DEFAULT 1       COMMENT '是否启用：1=启用，0=停用',
+  last_collect_time   DATETIME                          COMMENT '最后采集时间',
+  last_collect_status VARCHAR(16)                       COMMENT '最后采集状态：success / failed',
   created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (id),
-  UNIQUE INDEX uk_source_code (source_code)
+  UNIQUE INDEX uk_source_code (source_code),
+  INDEX idx_category (category),
+  INDEX idx_enabled (enabled)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据源主数据';
 
 -- ============================================================
@@ -51,7 +61,7 @@ CREATE TABLE ai_radar_import_batch (
   created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (id),
   UNIQUE INDEX uk_batch_no (batch_no),
-  INDEX idx_created_at (created_at)
+  INDEX idx_import_status (import_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='导入批次';
 
 -- ============================================================
@@ -118,7 +128,11 @@ CREATE TABLE ai_radar_article_analysis (
   id                  BIGINT          NOT NULL AUTO_INCREMENT  COMMENT '主键',
   article_id          BIGINT          NOT NULL                 COMMENT '文章 ID，关联 ai_radar_article.id',
   summary_cn          TEXT            NOT NULL                 COMMENT '中文摘要，150-300 字',
-  category            VARCHAR(128)                            COMMENT '技术分类：大语言模型 / 推理优化 / AI Agent / 多模态 / 训练与微调 / 部署与推理 / 数据与评测 / 安全与对齐 / RAG与检索 / 其他',
+  category            VARCHAR(128)                            COMMENT '资讯一级分类',
+  sub_category        VARCHAR(128)                            COMMENT '资讯子分类',
+  info_type           VARCHAR(64)                             COMMENT '资讯类型',
+  briefing_focus      TEXT                                    COMMENT '简报表达重点',
+  analysis_detail     JSON                                    COMMENT '按资讯类型存放的结构化分析详情',
   keywords            VARCHAR(512)                            COMMENT '关键词，逗号分隔，3-5 个',
   tech_tags           JSON                                    COMMENT '技术标签数组，如 ["LLM Inference", "FlashAttention"]',
   companies           JSON                                    COMMENT '涉及厂商数组，如 ["NVIDIA", "Meta"]',
@@ -133,10 +147,12 @@ CREATE TABLE ai_radar_article_analysis (
   analysis_status     VARCHAR(32)     NOT NULL DEFAULT 'success' COMMENT '分析状态：success / failed',
   created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (id),
-  INDEX idx_article_id (article_id),
-  INDEX idx_category (category),
+  UNIQUE INDEX uk_article_id (article_id),
   INDEX idx_value_score (value_score),
-  INDEX idx_prompt_version (prompt_version)
+  INDEX idx_category (category),
+  INDEX idx_category_sub_category (category, sub_category),
+  INDEX idx_info_type (info_type),
+  INDEX idx_analysis_status (analysis_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文章分析结果';
 
 -- ============================================================
@@ -158,29 +174,31 @@ CREATE TABLE ai_radar_deep_insight (
   analysis_status     VARCHAR(32)     NOT NULL DEFAULT 'success' COMMENT '分析状态：success / failed',
   created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (id),
-  INDEX idx_article_id (article_id)
+  UNIQUE INDEX uk_article_id (article_id),
+  INDEX idx_analysis_status (analysis_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='深度洞察';
 
 -- ============================================================
 -- 7. ai_radar_briefing_draft - 简报草稿
--- 保存系统生成的周报、月报、专题报告草稿元数据
--- 正文仅存入 EIPLite 知识库，MySQL 不存储正文
+-- 保存系统生成的周报、月报、季报、专题报告草稿
 -- ============================================================
 DROP TABLE IF EXISTS ai_radar_briefing_draft;
 CREATE TABLE ai_radar_briefing_draft (
   id                  BIGINT          NOT NULL AUTO_INCREMENT  COMMENT '主键',
-  briefing_type       VARCHAR(32)     NOT NULL                 COMMENT '简报类型：weekly / monthly / topic',
+  briefing_type       VARCHAR(32)     NOT NULL                 COMMENT '简报类型：weekly / monthly / quarterly / topic',
   title               VARCHAR(256)    NOT NULL                 COMMENT '简报标题',
-  time_range_start    DATE                                    COMMENT '覆盖时间开始',
-  time_range_end      DATE                                    COMMENT '覆盖时间结束',
+  content             LONGTEXT                                COMMENT '简报正文',
+  time_range_start    DATETIME                                COMMENT '覆盖时间开始',
+  time_range_end      DATETIME                                COMMENT '覆盖时间结束',
   related_article_ids JSON                                    COMMENT '关联文章 ID 列表',
   related_insight_ids JSON                                    COMMENT '关联洞察 ID 列表',
-  review_status       VARCHAR(32)     NOT NULL DEFAULT 'pending' COMMENT '审核状态：pending / reviewed',
+  review_status       VARCHAR(32)     NOT NULL DEFAULT 'pending' COMMENT '审核状态：pending / passed / rejected',
   created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   updated_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (id),
   INDEX idx_briefing_type (briefing_type),
-  INDEX idx_time_range_start (time_range_start)
+  INDEX idx_time_range (time_range_start, time_range_end),
+  INDEX idx_review_status (review_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='简报草稿';
 
 -- ============================================================
@@ -199,19 +217,22 @@ CREATE TABLE ai_radar_kb_mapping (
   briefing_id     BIGINT          NULL                    COMMENT '关联 ai_radar_briefing_draft.id（kb_type=briefing 时填充）',
   kb_status       VARCHAR(32)     NOT NULL DEFAULT 'success' COMMENT '入库状态：success / failed / updating',
   error_message   TEXT                                    COMMENT '入库失败原因',
+  tags            JSON                                    COMMENT '标签键值对',
   created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (id),
   UNIQUE INDEX uk_kb_type_file_id (kb_type, kb_file_id),
   INDEX idx_article_id (article_id),
+  INDEX idx_analysis_id (analysis_id),
   INDEX idx_insight_id (insight_id),
   INDEX idx_briefing_id (briefing_id),
   INDEX idx_kb_status (kb_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库文件映射';
 
 -- ============================================================
--- 初始化数据：12 个首期数据源
+-- 历史初始化数据（停用，仅保留设计追溯）
 -- ============================================================
+/*
 INSERT INTO ai_radar_source (source_code, source_name, source_type, access_url, domain, enabled) VALUES
 ('xin-zhi-yuan',     '新智元',          'tech_media',          NULL,                                   NULL,                  1),
 ('saibochangxin',    '赛博禅心',         'tech_media',          NULL,                                   NULL,                  1),
@@ -228,3 +249,7 @@ INSERT INTO ai_radar_source (source_code, source_name, source_type, access_url, 
 
 ALTER TABLE ai_radar_article MODIFY COLUMN `raw_summary` TEXT COMMENT '原始摘要内容';
 -- 如果需要存储更长内容可以用MEDIUMTEXT/LONGTEXT，足够存储万字以上内容
+*/
+
+-- 当前 32 个数据源初始化清单统一维护在 tech-research/sql/ai_radar_ddl.sql。
+SET FOREIGN_KEY_CHECKS = 1;

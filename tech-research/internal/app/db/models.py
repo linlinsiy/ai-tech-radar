@@ -1,7 +1,7 @@
 """
 内部侧 MySQL 连接与模型定义模块
 
-使用 SQLAlchemy ORM 定义 7 张核心表的模型，
+使用 SQLAlchemy ORM 定义 8 张核心表的模型，
 提供连接池管理和事务支持。
 """
 from datetime import datetime
@@ -88,7 +88,7 @@ class ArticleAnalysis(Base):
     __tablename__ = "ai_radar_article_analysis"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
-    article_id = Column(BigInteger, nullable=False, comment="文章 ID")
+    article_id = Column(BigInteger, nullable=False, unique=True, comment="文章 ID")
     summary_cn = Column(Text, nullable=False, comment="中文摘要")
     category = Column(String(128), comment="资讯一级分类")
     sub_category = Column(String(128), comment="资讯子分类")
@@ -114,7 +114,7 @@ class DeepInsight(Base):
     __tablename__ = "ai_radar_deep_insight"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
-    article_id = Column(BigInteger, nullable=False, comment="文章 ID")
+    article_id = Column(BigInteger, nullable=False, unique=True, comment="文章 ID")
     technical_background = Column(Text, nullable=False, comment="技术背景")
     core_problem = Column(Text, nullable=False, comment="核心问题")
     technical_solution = Column(Text, nullable=False, comment="技术方案")

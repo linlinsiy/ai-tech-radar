@@ -488,47 +488,35 @@ async def handle_import(request: Request, body: ImportRequest):
 
             try:
 
-                analysis = ArticleAnalysis(
-
-                    article_id=article_id,
-
-                    summary_cn=item.summary_cn,
-
-                    category=item.category,
-
-                    sub_category=item.sub_category,
-
-                    info_type=item.info_type,
-
-                    briefing_focus=item.briefing_focus,
-
-                    analysis_detail=item.analysis_detail,
-
-                    keywords=",".join(item.keywords) if item.keywords else None,
-
-                    tech_tags=json.dumps(item.tech_tags) if item.tech_tags else None,
-
-                    companies=json.dumps(item.companies) if item.companies else None,
-
-                    score_tech_depth=item.score_tech_depth,
-
-                    score_engineering=item.score_engineering,
-
-                    score_trend=item.score_trend,
-
-                    score_credibility=item.score_credibility,
-
-                    score_timeliness=item.score_timeliness,
-
-                    value_score=item.value_score,
-
-                    model_name=item.model_name,
-
-                    prompt_version=item.prompt_version,
-
-                )
-
-                session.add(analysis)
+                analysis_values = {
+                    "summary_cn": item.summary_cn,
+                    "category": item.category,
+                    "sub_category": item.sub_category,
+                    "info_type": item.info_type,
+                    "briefing_focus": item.briefing_focus,
+                    "analysis_detail": item.analysis_detail,
+                    "keywords": ",".join(item.keywords) if item.keywords else None,
+                    "tech_tags": item.tech_tags or None,
+                    "companies": item.companies or None,
+                    "score_tech_depth": item.score_tech_depth,
+                    "score_engineering": item.score_engineering,
+                    "score_trend": item.score_trend,
+                    "score_credibility": item.score_credibility,
+                    "score_timeliness": item.score_timeliness,
+                    "value_score": item.value_score,
+                    "model_name": item.model_name,
+                    "prompt_version": item.prompt_version,
+                    "analysis_status": "success",
+                }
+                analysis = session.query(ArticleAnalysis).filter(
+                    ArticleAnalysis.article_id == article_id
+                ).first()
+                if analysis is None:
+                    analysis = ArticleAnalysis(article_id=article_id, **analysis_values)
+                    session.add(analysis)
+                else:
+                    for field, value in analysis_values.items():
+                        setattr(analysis, field, value)
 
             except Exception as e:
 
@@ -566,27 +554,25 @@ async def handle_import(request: Request, body: ImportRequest):
 
             try:
 
-                insight = DeepInsight(
-
-                    article_id=article_id,
-
-                    technical_background=item.technical_background,
-
-                    core_problem=item.core_problem,
-
-                    technical_solution=item.technical_solution,
-
-                    impact_analysis=item.impact_analysis,
-
-                    reference_value=item.reference_value,
-
-                    model_name=item.model_name,
-
-                    prompt_version=item.prompt_version,
-
-                )
-
-                session.add(insight)
+                insight_values = {
+                    "technical_background": item.technical_background,
+                    "core_problem": item.core_problem,
+                    "technical_solution": item.technical_solution,
+                    "impact_analysis": item.impact_analysis,
+                    "reference_value": item.reference_value,
+                    "model_name": item.model_name,
+                    "prompt_version": item.prompt_version,
+                    "analysis_status": "success",
+                }
+                insight = session.query(DeepInsight).filter(
+                    DeepInsight.article_id == article_id
+                ).first()
+                if insight is None:
+                    insight = DeepInsight(article_id=article_id, **insight_values)
+                    session.add(insight)
+                else:
+                    for field, value in insight_values.items():
+                        setattr(insight, field, value)
 
             except Exception as e:
 
