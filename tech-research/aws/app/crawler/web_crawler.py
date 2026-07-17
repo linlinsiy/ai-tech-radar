@@ -221,6 +221,7 @@ class WebCrawler(BaseCrawler):
         )
         self.request_interval = _safe_float(source.get("request_interval_seconds", ""), 1.0)
         self.page_url_pattern = source.get("page_url_pattern", "").strip()
+        self.next_page_selectors = _split_selectors(source.get("next_page_selector", ""), [])
         self.list_link_xpath = source.get("list_link_xpath", "").strip()
         self.list_title_xpath = source.get("list_title_xpath", "").strip()
         self.xpath_strict = str(source.get("xpath_strict", "false")).lower() == "true"
@@ -260,6 +261,9 @@ class WebCrawler(BaseCrawler):
         )
         self.include_keywords = _split_keywords(source.get("include_keywords", ""))
         self.exclude_keywords = _split_keywords(source.get("exclude_keywords", ""))
+        self.detail_content_reject_keywords = _split_keywords(
+            source.get("detail_content_reject_keywords", "")
+        )
 
         self.browser_fallback_enabled = str(
             source.get("_browser_fallback_enabled", source.get("browser_fallback", "false"))
@@ -271,6 +275,19 @@ class WebCrawler(BaseCrawler):
             timeout_seconds=_safe_int(source.get("_browser_timeout_seconds", ""), 45),
             executable_path=source.get("_browser_executable_path", ""),
         )
+        self.challenge_max_pages = max(
+            1, _safe_int(source.get("challenge_max_pages", ""), 1)
+        )
+        self._prefer_browser_after_timeout = False
+        self._detail_challenge_open = False
+        self._last_access_challenge = False
+        self.collection_diagnostics.update({
+            "http_timeouts": 0,
+            "browser_attempts": 0,
+            "browser_successes": 0,
+            "access_challenges": 0,
+            "challenge_urls": [],
+        })
 
         self.session = requests.Session()
         self.request_headers = dict(WEB_REQUEST_HEADERS)
@@ -327,33 +344,75 @@ class WebCrawler(BaseCrawler):
 
     def _request_html(self, url: str) -> Optional[str]:
         """请求 HTML 页面，统一使用浏览器 UA。"""
+        self._last_access_challenge = False
         html = None
-        try:
-            resp = self.session.get(
-                url,
-                timeout=self.timeout,
-                headers=self.request_headers,
-                allow_redirects=True,
-            )
-            self.last_http_status = resp.status_code
-            self.last_effective_url = resp.url
-            resp.raise_for_status()
-            resp.encoding = resp.apparent_encoding or "utf-8"
-            html = resp.text
-        except requests.Timeout:
-            self.last_error = f"request timeout after {self.timeout}s"
-            logger.warning("[%s] HTML 请求超时: %s", self.source_code, url)
-        except requests.RequestException as e:
-            self.last_error = str(e)
-            logger.warning("[%s] HTML 请求失败: %s, %s", self.source_code, url, str(e))
+        if not (self.browser_fallback_enabled and self._prefer_browser_after_timeout):
+            try:
+                resp = self.session.get(
+                    url,
+                    timeout=self.timeout,
+                    headers=self.request_headers,
+                    allow_redirects=True,
+                )
+                self.last_http_status = resp.status_code
+                self.last_effective_url = resp.url
+                resp.raise_for_status()
+                resp.encoding = resp.apparent_encoding or "utf-8"
+                html = resp.text
+            except requests.Timeout:
+                self.last_error = f"request timeout after {self.timeout}s"
+                self.collection_diagnostics["http_timeouts"] += 1
+                if self.browser_fallback_enabled:
+                    self._prefer_browser_after_timeout = True
+                logger.warning("[%s] HTML 请求超时: %s", self.source_code, url)
+            except requests.RequestException as e:
+                self.last_error = str(e)
+                logger.warning("[%s] HTML 请求失败: %s, %s", self.source_code, url, str(e))
+
+        if html and self._is_access_challenge(html):
+            self._record_access_challenge(url)
+            return None
 
         if self.browser_fallback_enabled and self._needs_browser_fallback(html):
             logger.info("[%s] 启用浏览器降级采集: %s", self.source_code, url)
+            self.collection_diagnostics["browser_attempts"] += 1
             rendered = self.browser_fetcher.fetch_html(url)
+            if rendered and self._is_access_challenge(rendered):
+                self._record_access_challenge(url)
+                return None
             if rendered:
                 self.last_error = ""
+                self.collection_diagnostics["browser_successes"] += 1
                 return rendered
         return html
+
+    @staticmethod
+    def _is_access_challenge(html: Optional[str]) -> bool:
+        """识别验证码和访问挑战页；不尝试绕过站点访问控制。"""
+        lowered = (html or "").lower()
+        return any(marker in lowered for marker in (
+            "ttgcaptcha",
+            "captcha/index.js",
+            "verify_center",
+            "cf-chl-",
+            "challenge-platform",
+            "滑块验证",
+        ))
+
+    def _record_access_challenge(self, url: str) -> None:
+        self._last_access_challenge = True
+        self.last_error = "access challenge or captcha page"
+        self.collection_diagnostics["access_challenges"] += 1
+        challenge_urls = self.collection_diagnostics["challenge_urls"]
+        if len(challenge_urls) < 3:
+            challenge_urls.append(url)
+        if self.collection_diagnostics["access_challenges"] >= self.challenge_max_pages:
+            self._detail_challenge_open = True
+        logger.warning(
+            "[%s] 检测到验证码/访问挑战页，停止本批后续正文请求: %s",
+            self.source_code,
+            url,
+        )
 
     def _needs_browser_fallback(self, html: Optional[str]) -> bool:
         """请求失败、正文过短或明显 JS 空壳时使用浏览器渲染。"""
@@ -379,12 +438,29 @@ class WebCrawler(BaseCrawler):
             url = str(candidate.get("url") or "")
             if not self._is_allowed_article_url(url):
                 continue
+            if self._detail_challenge_open:
+                # 保留候选元数据，后续批次可重试；本批不重复触发验证码页面。
+                results.append(self._build_article_from_metadata(candidate))
+                continue
             article = self._build_article(candidate)
             if article:
                 results.append(article)
             if self.request_interval > 0:
                 time.sleep(self.request_interval)
         return results
+
+    def _build_article_from_metadata(self, candidate: Dict[str, object]) -> RawArticle:
+        return RawArticle(
+            source_code=self.source_code,
+            title=str(candidate.get("title") or "Untitled"),
+            url=str(candidate.get("url") or ""),
+            author=str(candidate.get("author") or "") or None,
+            publish_time=(
+                candidate.get("publish_time")
+                if isinstance(candidate.get("publish_time"), datetime) else None
+            ),
+            raw_summary=str(candidate.get("summary") or "") or None,
+        )
 
     def _list_page_urls(self) -> List[str]:
         """生成列表页 URL。"""
@@ -399,7 +475,15 @@ class WebCrawler(BaseCrawler):
         candidates: List[Dict[str, object]] = []
         seen_urls = set()
 
-        for page_url in self._list_page_urls():
+        page_urls = self._list_page_urls()
+        seen_pages = set()
+        page_index = 0
+        while page_index < len(page_urls) and len(seen_pages) < self.max_pages:
+            page_url = page_urls[page_index]
+            page_index += 1
+            if page_url in seen_pages:
+                continue
+            seen_pages.add(page_url)
             html = self._request_html(page_url)
             if not html:
                 continue
@@ -413,10 +497,37 @@ class WebCrawler(BaseCrawler):
                 if len(candidates) >= self.candidate_limit:
                     return candidates
 
+            for next_url in self._next_page_urls(html, page_url):
+                if next_url not in seen_pages and next_url not in page_urls:
+                    page_urls.append(next_url)
+
             if self.request_interval > 0:
                 time.sleep(self.request_interval)
 
         return candidates
+
+    def _next_page_urls(self, html: str, base_url: str) -> List[str]:
+        """从已配置的“下一页”链接发现有限分页，避免只抓首页。"""
+        if not self.next_page_selectors:
+            return []
+        soup = BeautifulSoup(html, "lxml")
+        urls = []
+        for selector in self.next_page_selectors:
+            try:
+                links = soup.select(selector)
+            except Exception:
+                logger.warning("[%s] next_page_selector 无效: %s", self.source_code, selector)
+                continue
+            for link in links:
+                href = link.get("href", "")
+                url = _normalize_url(urljoin(base_url, href)) if href else ""
+                parsed = urlparse(url)
+                if (
+                    url and parsed.scheme in ("http", "https")
+                    and (not self.domain or self.domain in parsed.netloc)
+                ):
+                    urls.append(url)
+        return list(dict.fromkeys(urls))
 
     def _parse_list_page(self, html: str, base_url: str) -> List[Dict[str, object]]:
         """解析列表页候选文章。"""
@@ -764,6 +875,12 @@ class WebCrawler(BaseCrawler):
         best_length = 0
         for node in candidates:
             text = _clean_text(node.get_text(separator="\n", strip=True))
+            lowered = text.lower()
+            if self.detail_content_reject_keywords and any(
+                keyword.lower() in lowered
+                for keyword in self.detail_content_reject_keywords
+            ):
+                continue
             if len(text) > best_length:
                 best_node = node
                 best_length = len(text)

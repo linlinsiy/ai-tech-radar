@@ -264,6 +264,7 @@ PRIMARY_RESILIENT_VARIANTS: Dict[str, List[Dict[str, Any]]] = {
             "access_url": "https://cloud.tencent.com/developer/column/102946",
             "domain": "cloud.tencent.com",
             "fetch_method": "web",
+            "_minimum_candidates": "3",
         },
         {
             "_variant_name": "developer-home-keyword-fallback",
@@ -273,6 +274,26 @@ PRIMARY_RESILIENT_VARIANTS: Dict[str, List[Dict[str, Any]]] = {
             "include_keywords": (
                 "AI,人工智能,大模型,智能体,Agent,MCP,RAG,机器学习,深度学习"
             ),
+            "_minimum_candidates": "3",
+        },
+        {
+            "_variant_name": "ai-section-xpath-fallback",
+            "access_url": "https://cloud.tencent.com/developer/section/1005",
+            "domain": "cloud.tencent.com",
+            "fetch_method": "web",
+            "list_link_xpath": (
+                "//div[contains(@class, 'article-item')]"
+                "//a[contains(@class, 'item-title')]/@href"
+            ),
+            "list_title_xpath": (
+                "//div[contains(@class, 'article-item')]"
+                "//a[contains(@class, 'item-title')]/text()"
+            ),
+            "xpath_strict": "true",
+            "include_keywords": (
+                "AI,人工智能,大模型,智能体,Agent,MCP,RAG,机器学习,深度学习"
+            ),
+            "_minimum_candidates": "3",
         },
     ],
     "01caijing-home": [
@@ -281,6 +302,17 @@ PRIMARY_RESILIENT_VARIANTS: Dict[str, List[Dict[str, Any]]] = {
             "access_url": "https://www.01caijing.com/",
             "domain": "www.01caijing.com",
             "fetch_method": "web",
+            "_minimum_candidates": "5",
+        },
+        {
+            "_variant_name": "ai-channel-xpath-fallback",
+            "access_url": "https://www.01caijing.com/ai",
+            "domain": "www.01caijing.com",
+            "fetch_method": "web",
+            "list_link_xpath": "//div[contains(@class, 'news-list')]//h3/a/@href",
+            "list_title_xpath": "//div[contains(@class, 'news-list')]//h3/a/@title",
+            "xpath_strict": "true",
+            "_minimum_candidates": "5",
         },
     ],
     "10jqka-news": [
@@ -289,6 +321,18 @@ PRIMARY_RESILIENT_VARIANTS: Dict[str, List[Dict[str, Any]]] = {
             "access_url": "https://news.10jqka.com.cn/",
             "domain": "news.10jqka.com.cn",
             "fetch_method": "web",
+            "_minimum_candidates": "3",
+        },
+        {
+            "_variant_name": "ai-channel-xpath-fallback",
+            "access_url": "https://www.10jqka.com.cn/ai/",
+            "domain": "www.10jqka.com.cn",
+            "fetch_method": "web",
+            "list_link_xpath": "//div[contains(@class, 'news_list')]//h2/a/@href",
+            "list_title_xpath": "//div[contains(@class, 'news_list')]//h2/a/text()",
+            "xpath_strict": "true",
+            "include_keywords": "AI,人工智能,大模型,金融科技,智能投研,智能风控,量化,监管科技",
+            "_minimum_candidates": "3",
         },
     ],
     "oschina-ai": [

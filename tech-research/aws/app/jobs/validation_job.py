@@ -219,6 +219,7 @@ class ValidationCollectionService:
         stats = {
             "source_count": collection["source_count"],
             "success_sources": sum(1 for item in source_results if item["status"] == "success"),
+            "partial_sources": sum(1 for item in source_results if item["status"] == "partial"),
             "empty_sources": sum(1 for item in source_results if item["status"] == "empty"),
             "failed_sources": sum(1 for item in source_results if item["status"] == "failed"),
             "article_count": len(unique_articles),

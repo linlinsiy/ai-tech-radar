@@ -70,11 +70,13 @@ class RSSCrawler(BaseCrawler):
             source: 数据源配置字典
         """
         super().__init__(source)
+        self.source = dict(source)
         self.timeout = _safe_int(source.get("timeout_seconds"), 20)
         # 仅作为异常 Feed 的技术保护，不参与最终报告来源均衡。
         self.max_articles = _safe_int(
             source.get("_candidate_limit", source.get("max_articles")), 100
         )
+        self.rss_detail_fetch = str(source.get("rss_detail_fetch", "false")).lower() == "true"
 
     def _request_feed(self, url: str):
         """请求 RSS URL，统一设置浏览器 UA、超时和重定向。"""
@@ -204,6 +206,11 @@ class RSSCrawler(BaseCrawler):
             logger.error("[%s] RSS 解析失败: %s", self.source_code, str(e))
             return []
 
+        self.collection_diagnostics.update({
+            "feed_entries": len(feed.entries),
+            "feed_bozo": bool(feed.bozo),
+        })
+
         # 检查 feed 解析状态
         if feed.bozo and not feed.entries:
             logger.warning(
@@ -281,4 +288,19 @@ class RSSCrawler(BaseCrawler):
             self.source_code,
             len(articles)
         )
+        return articles
+
+    def fetch_candidates(self, candidates: List[RawArticle]) -> List[RawArticle]:
+        """对摘要型 RSS 按配置补读详情页，其他 RSS 保持原始内容。"""
+        if not self.rss_detail_fetch or not candidates:
+            return candidates
+
+        from crawler.web_crawler import WebCrawler
+
+        detail_source = dict(self.source)
+        detail_source["fetch_method"] = "web"
+        crawler = WebCrawler(detail_source)
+        articles = crawler.fetch_candidates(candidates)
+        self.collection_diagnostics["rss_detail_fetch"] = True
+        self.collection_diagnostics["rss_detail"] = dict(crawler.collection_diagnostics)
         return articles

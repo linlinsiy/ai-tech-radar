@@ -99,6 +99,8 @@ class BaseCrawler(ABC):
         self.last_http_status: Optional[int] = None
         self.last_effective_url = ""
         self.last_error = ""
+        # 采集器将可解释的运行信息回传给编排层，便于区分空结果、正文不足和访问拦截。
+        self.collection_diagnostics: Dict[str, object] = {}
 
     @abstractmethod
     def fetch(self) -> List[RawArticle]:

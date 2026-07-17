@@ -74,7 +74,86 @@ journalctl -u ai-radar-aws -f
 curl http://127.0.0.1:9003/health
 ```
 
-#### 1.1.3 临时后台启动方式
+#### 1.1.3 Windows 本地启动方式
+
+Windows 本地验证建议先启动 internal，再启动 AWS；两个服务分别使用一个 PowerShell 窗口前台运行，便于直接查看日志。首次启动前分别在两个目录安装依赖：
+
+```powershell
+# internal 侧首次安装
+Set-Location E:\code\AI技术趋势雷达\tech-research\internal
+py -3 -m venv venv
+.\venv\Scripts\python.exe -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# AWS 侧首次安装
+Set-Location E:\code\AI技术趋势雷达\tech-research\aws
+py -3 -m venv venv
+.\venv\Scripts\python.exe -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+启动 internal 服务：
+
+```powershell
+Set-Location E:\code\AI技术趋势雷达\tech-research\internal
+.\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 9001 --log-level info
+```
+
+在第二个 PowerShell 窗口启动 AWS 服务：
+
+```powershell
+Set-Location E:\code\AI技术趋势雷达\tech-research\aws
+.\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 9003 --log-level info
+```
+
+本地服务健康检查：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:9001/health | ConvertTo-Json -Depth 5
+Invoke-RestMethod http://127.0.0.1:9003/health | ConvertTo-Json -Depth 5
+```
+
+如需后台启动，可执行以下命令；日志分别写入各服务的 `logs/windows-dev.stdout.log` 和 `logs/windows-dev.stderr.log`：
+
+```powershell
+$internalDir = 'E:\code\AI技术趋势雷达\tech-research\internal'
+New-Item -ItemType Directory -Force -Path "$internalDir\logs" | Out-Null
+Start-Process -FilePath "$internalDir\venv\Scripts\python.exe" `
+  -ArgumentList '-m uvicorn app.main:app --host 127.0.0.1 --port 9001 --log-level info' `
+  -WorkingDirectory $internalDir `
+  -RedirectStandardOutput "$internalDir\logs\windows-dev.stdout.log" `
+  -RedirectStandardError "$internalDir\logs\windows-dev.stderr.log"
+
+$awsDir = 'E:\code\AI技术趋势雷达\tech-research\aws'
+New-Item -ItemType Directory -Force -Path "$awsDir\logs" | Out-Null
+Start-Process -FilePath "$awsDir\venv\Scripts\python.exe" `
+  -ArgumentList '-m uvicorn app.main:app --host 127.0.0.1 --port 9003 --log-level info' `
+  -WorkingDirectory $awsDir `
+  -RedirectStandardOutput "$awsDir\logs\windows-dev.stdout.log" `
+  -RedirectStandardError "$awsDir\logs\windows-dev.stderr.log"
+```
+
+停止本地服务：前台启动时在对应 PowerShell 窗口按 `Ctrl+C`；后台启动时按端口定位并停止进程：
+
+```powershell
+# 查看 9001（internal）和 9003（AWS）当前监听进程
+Get-NetTCPConnection -State Listen -LocalPort 9001,9003 |
+  Select-Object LocalPort, OwningProcess
+
+# 停止 internal 服务
+$internalProcess = Get-NetTCPConnection -State Listen -LocalPort 9001 -ErrorAction SilentlyContinue
+if ($internalProcess) {
+  $internalProcess | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ }
+}
+
+# 停止 AWS 服务
+$awsProcess = Get-NetTCPConnection -State Listen -LocalPort 9003 -ErrorAction SilentlyContinue
+if ($awsProcess) {
+  $awsProcess | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ }
+}
+```
+
+#### 1.1.4 临时后台启动方式
 
 如果当前服务器暂不方便注册 systemd，可使用 `nohup` 临时后台启动：
 
@@ -301,6 +380,24 @@ curl -sS -X POST 'http://127.0.0.1:9003/api/v1/validation/collect' \
   -H 'Content-Type: application/json' \
   -d '{"strategy":"server_recommended","scope":"all","task_type":"manual_backfill"}' \
   | python3 -m json.tool
+```
+
+- **Windows PowerShell 示例**
+
+```powershell
+# 使用服务器探测适配策略，采集 2026-06-17 至 2026-07-17 的全部启用来源
+$body = @{
+  strategy = 'primary_resilient'
+  scope = 'all'
+  task_type = 'manual_backfill'
+  from_date = '2026-06-17'
+  to_date = '2026-07-17'
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Post `
+  -Uri 'http://127.0.0.1:9003/api/v1/validation/collect' `
+  -ContentType 'application/json' `
+  -Body $body | ConvertTo-Json -Depth 10
 ```
 
 - **验证要点**：响应的 `success` 应为 `true`；记录返回的 `data.batch_no`，检查 `data.result_file` 存在，并关注 `article_count`、`content_available_count`、`source_distribution` 和各来源 `status`。该接口不会创建内部导入批次或简报草稿。

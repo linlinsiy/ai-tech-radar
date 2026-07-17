@@ -322,6 +322,7 @@ class CollectOrchestrator:
             selected_articles: List[RawArticle] = []
             selected_source: Optional[Dict[str, Any]] = None
             selected_crawler = None
+            best_partial = None
 
             for variant in plan["variants"]:
                 runtime = self._with_runtime_crawler_options(variant)
@@ -332,6 +333,7 @@ class CollectOrchestrator:
                     "status": "empty",
                     "candidate_count": 0,
                     "article_count": 0,
+                    "minimum_candidates": 1,
                     "http_status": None,
                     "effective_url": "",
                     "error": "",
@@ -344,6 +346,14 @@ class CollectOrchestrator:
                     attempt["effective_url"] = crawler.last_effective_url
                     attempt["error"] = (crawler.last_error or "")[:500]
                     attempt["candidate_count"] = len(candidates)
+                    attempt["diagnostics"] = dict(crawler.collection_diagnostics)
+                    try:
+                        minimum_candidates = max(
+                            1, int(runtime.get("_minimum_candidates", 1))
+                        )
+                    except (TypeError, ValueError):
+                        minimum_candidates = 1
+                    attempt["minimum_candidates"] = minimum_candidates
                     if not candidates:
                         if attempt["error"] or (
                             attempt["http_status"] is not None
@@ -366,6 +376,25 @@ class CollectOrchestrator:
                         selected_articles = candidates
 
                     attempt["article_count"] = len(selected_articles)
+                    attempt["http_status"] = crawler.last_http_status
+                    attempt["effective_url"] = crawler.last_effective_url
+                    attempt["error"] = (crawler.last_error or "")[:500]
+                    attempt["diagnostics"] = dict(crawler.collection_diagnostics)
+                    if len(candidates) < minimum_candidates:
+                        attempt["status"] = "underfilled"
+                        partial = (selected_articles, runtime, crawler)
+                        if best_partial is None or len(selected_articles) > len(best_partial[0]):
+                            best_partial = partial
+                        attempts.append(attempt)
+                        logger.info(
+                            "[%s] 候选数不足最低要求，继续尝试后备采集方式: %d/%d, variant=%s",
+                            plan["source_code"],
+                            len(candidates),
+                            minimum_candidates,
+                            attempt["variant"],
+                        )
+                        continue
+
                     attempt["status"] = "success"
                     selected_source = runtime
                     selected_crawler = crawler
@@ -382,7 +411,16 @@ class CollectOrchestrator:
                         str(exc),
                     )
 
-            status = "success" if selected_articles else (
+            if not selected_articles and best_partial is not None:
+                selected_articles, selected_source, selected_crawler = best_partial
+                logger.info(
+                    "[%s] 所有后备方式未达到候选最低量，保留最佳部分结果: %d 篇",
+                    plan["source_code"],
+                    len(selected_articles),
+                )
+
+            status = ("success" if any(item["status"] == "success" for item in attempts)
+                      else "partial") if selected_articles else (
                 "failed" if any(item["status"] == "failed" for item in attempts)
                 else "empty"
             )
@@ -402,6 +440,10 @@ class CollectOrchestrator:
                 ),
                 "source_profile": selected_source or {},
                 "attempts": attempts,
+                "collection_diagnostics": (
+                    dict(selected_crawler.collection_diagnostics)
+                    if selected_crawler else {}
+                ),
             }
             source_results.append(source_result)
 

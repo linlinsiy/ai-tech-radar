@@ -23,6 +23,7 @@ from crawler.source_strategies import (
     match_server_coverage_aliases,
 )
 from crawler.web_crawler import WebCrawler
+from crawler.rss_crawler import RSSCrawler
 from deep.candidate_selector import L3CandidateSelector
 from deep.insight import L3Analyzer
 from api.jobs_api import (
@@ -260,6 +261,125 @@ class CollectionRuleTests(unittest.TestCase):
         })
         self.assertTrue(crawler._needs_browser_fallback('<html><body><div id="app"></div></body></html>'))
         self.assertFalse(crawler._needs_browser_fallback("<html><body>" + "有效正文" * 200 + "</body></html>"))
+
+    def test_access_challenge_is_detected_without_attempting_to_bypass_it(self):
+        crawler = WebCrawler({
+            "code": "test",
+            "name": "test",
+            "access_url": "https://example.com/list",
+            "domain": "example.com",
+        })
+
+        self.assertTrue(crawler._is_access_challenge(
+            "<script>TTGCaptcha.render({showMode: 'mask'})</script>"
+        ))
+        crawler._record_access_challenge("https://example.com/article/1")
+
+        self.assertTrue(crawler._detail_challenge_open)
+        self.assertEqual(crawler.collection_diagnostics["access_challenges"], 1)
+
+    def test_content_reject_keywords_skip_footer_like_nodes(self):
+        crawler = WebCrawler({
+            "code": "test",
+            "name": "test",
+            "access_url": "https://example.com/list",
+            "domain": "example.com",
+            "detail_content_selector": ".article-content|main",
+            "detail_content_reject_keywords": "关注阿里云,联系我们",
+        })
+        detail = crawler._parse_detail_page(
+            "<html><body><div class='article-content'>关注阿里云 联系我们</div>"
+            "<main>这是可用于评分的正文内容，包含完整的技术说明。</main></body></html>"
+        )
+
+        self.assertIn("可用于评分", detail["summary"])
+        self.assertNotIn("关注阿里云", detail["summary"])
+
+    def test_web_crawler_follows_configured_next_page_link(self):
+        crawler = WebCrawler({
+            "code": "test",
+            "name": "test",
+            "access_url": "https://example.com/list",
+            "domain": "example.com",
+            "list_selector": "article a",
+            "next_page_selector": "a[rel='next']",
+            "max_pages": "2",
+        })
+        pages = {
+            "https://example.com/list": (
+                "<article><a href='/article/1'>AI工程文章一</a></article>"
+                "<a rel='next' href='/list?page=2'>下一页</a>"
+            ),
+            "https://example.com/list?page=2": (
+                "<article><a href='/article/2'>AI工程文章二</a></article>"
+            ),
+        }
+        with patch.object(crawler, "_request_html", side_effect=lambda url: pages.get(url)):
+            candidates = crawler.discover_candidates()
+
+        self.assertEqual([item.url for item in candidates], [
+            "https://example.com/article/1",
+            "https://example.com/article/2",
+        ])
+
+    def test_rss_detail_fetch_uses_the_shared_web_detail_reader(self):
+        crawler = RSSCrawler({
+            "code": "test",
+            "name": "test",
+            "access_url": "https://example.com/feed.xml",
+            "domain": "example.com",
+            "rss_detail_fetch": "true",
+        })
+        article = RawArticle(
+            source_code="test",
+            title="InfoQ 技术实践文章",
+            url="https://example.com/article/1",
+        )
+        with patch("crawler.web_crawler.WebCrawler.fetch_candidates", return_value=[article]) as fetch:
+            result = crawler.fetch_candidates([article])
+
+        self.assertEqual(result, [article])
+        fetch.assert_called_once()
+        self.assertTrue(crawler.collection_diagnostics["rss_detail_fetch"])
+
+    def test_underfilled_primary_variant_continues_to_fallback(self):
+        config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
+        orchestrator = CollectOrchestrator(AWSConfig(config_dir), initialize_analysis=False)
+
+        class StubCrawler:
+            def __init__(self, article_count):
+                self.article_count = article_count
+                self.last_http_status = 200
+                self.last_effective_url = "https://example.com"
+                self.last_error = ""
+                self.collection_diagnostics = {"feed_entries": article_count}
+
+            def discover_candidates(self):
+                return [RawArticle(
+                    source_code="test-source",
+                    title=f"AI工程候选文章{i}",
+                    url=f"https://example.com/article/{self.article_count}-{i}",
+                ) for i in range(self.article_count)]
+
+        plans = [{
+            "source_code": "test-source",
+            "source_name": "Test Source",
+            "category": "AI基础设施",
+            "variants": [
+                {"code": "test-source", "name": "Test Source", "_variant_name": "primary", "_minimum_candidates": "3"},
+                {"code": "test-source", "name": "Test Source", "_variant_name": "fallback", "_minimum_candidates": "3"},
+            ],
+        }]
+        with patch("jobs.collect_job.build_source_plans", return_value=plans), patch(
+            "jobs.collect_job.CrawlerFactory.create",
+            side_effect=[StubCrawler(1), StubCrawler(4)],
+        ):
+            result = orchestrator.collect_stage(strategy=PRIMARY_RESILIENT)
+
+        source = result["source_results"][0]
+        self.assertEqual(source["selected_variant"], "fallback")
+        self.assertEqual(source["article_count"], 4)
+        self.assertEqual(source["attempts"][0]["status"], "underfilled")
 
     def test_browser_fetcher_accepts_system_browser_path(self):
         path = os.path.join("C:\\", "Program Files", "Browser", "browser.exe")
