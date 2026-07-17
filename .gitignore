@@ -20,9 +20,7 @@ venv/
 *.txt
 tech-research/aws/logs/
 tech-research/internal/logs/
-tech-research/aws/data/interim/*.json
-tech-research/aws/data/collection_audit/
-tech-research/aws/data/failed_imports/
+tech-research/aws/data/*
 tech-research/aws/stdout.txt
 tech-research/aws/stderr.txt
 tech-research/internal/stdout.txt
