@@ -166,18 +166,23 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=181), crawled), 0.0)
         self.assertEqual(L2Analyzer._timeliness_score(None, crawled), 0.0)
 
-    def test_l2_accepts_zero_for_org_relevance_and_trend(self):
+    def test_l2_accepts_zero_scores_and_normalizes_org_relevance_anchor(self):
         scores = L2Analyzer._extract_scores({
-            "score_org_relevance": 0,
+            "score_org_relevance": 7,
             "score_trend": 0,
             "score_tech_depth": 0,
         })
 
-        self.assertEqual(scores["org_relevance"], 0.0)
+        self.assertEqual(scores["org_relevance"], 6.0)
         self.assertEqual(scores["trend"], 0.0)
-        self.assertEqual(scores["tech_depth"], 5.0)
+        self.assertEqual(scores["tech_depth"], 0.0)
+        self.assertEqual(
+            L2Analyzer._extract_scores({"score_org_relevance": 5})["org_relevance"],
+            3.0,
+        )
+        self.assertEqual(L2Analyzer._extract_scores({})["org_relevance"], 0.0)
 
-    def test_source_selection_roles_do_not_turn_financial_media_into_engineering_source(self):
+    def test_legacy_source_roles_remain_stable_for_import_compatibility(self):
         self.assertEqual(AWSConfig._default_selection_role("academic"), "research")
         self.assertEqual(AWSConfig._default_selection_role("industry_application"), "industry")
         self.assertEqual(AWSConfig._default_selection_role("tech_community"), "engineering")
@@ -213,7 +218,7 @@ class CollectionRuleTests(unittest.TestCase):
             FakeLLM(parsed),
             FakePrompts(),
             source_profiles={"official": {"type": "vendor_blog"}},
-            deep_analysis_min_score=6.5,
+            deep_analysis_min_score=6.0,
         )
         article = RawArticle(
             source_code="official",
@@ -226,8 +231,8 @@ class CollectionRuleTests(unittest.TestCase):
 
         result = analyzer._analyze_single(article)
 
-        self.assertEqual(result["analysis"]["rank_score"], 8.35)
-        self.assertEqual(result["analysis"]["value_score"], 8.35)
+        self.assertEqual(result["analysis"]["rank_score"], 8.5)
+        self.assertEqual(result["analysis"]["value_score"], 8.5)
 
     def test_title_router_keeps_low_confidence_and_has_no_importance_identity(self):
         llm = FakeLLM({
@@ -807,15 +812,10 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual([item.url for item in selected], [agent.url])
         self.assertEqual({item.url for item in remaining}, {release.url, other.url})
 
-    def test_l3_candidates_are_round_robin_balanced_by_source(self):
+    def test_l3_candidates_select_highest_scores_without_source_quota(self):
         selector = L3CandidateSelector({
-            "enabled": True,
             "max_candidates_per_batch": 6,
-            "max_category_ratio": 1.0,
             "topic_similarity_threshold": 0.95,
-            "engineering_source_ratio": 0.333,
-            "industry_source_ratio": 0.333,
-            "research_source_ratio": 0.333,
         }, min_score=8.0)
         results = (
             [self._l2_result("source-a", index, score=9.0 - index * 0.1) for index in range(5)]
@@ -826,11 +826,8 @@ class CollectionRuleTests(unittest.TestCase):
         selected, metadata = selector.select(results)
 
         self.assertEqual(len(selected), 6)
-        self.assertEqual(metadata["source_counts"], {
-            "source-a": 2,
-            "source-b": 2,
-            "source-c": 2,
-        })
+        self.assertEqual(metadata["selection_mode"], "rank_only")
+        self.assertEqual(metadata["source_counts"]["source-a"], 5)
 
     def test_validation_l3_does_not_refetch_missing_content(self):
         analyzer = L3Analyzer(
@@ -847,9 +844,7 @@ class CollectionRuleTests(unittest.TestCase):
 
     def test_l3_candidates_collapse_same_topic_across_sources(self):
         selector = L3CandidateSelector({
-            "enabled": True,
             "max_candidates_per_batch": 4,
-            "max_category_ratio": 1.0,
             "topic_similarity_threshold": 0.8,
         }, min_score=8.0)
         results = [
@@ -863,14 +858,10 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(metadata["topics"], 1)
         self.assertEqual(metadata["selected_articles"][0]["related_count"], 2)
 
-    def test_l3_high_score_release_cannot_bypass_source_balance(self):
+    def test_l3_high_score_releases_are_not_replaced_for_source_diversity(self):
         selector = L3CandidateSelector({
-            "enabled": True,
             "max_candidates_per_batch": 3,
-            "max_category_ratio": 1.0,
             "topic_similarity_threshold": 0.95,
-            "engineering_source_ratio": 0.10,
-            "min_sources_for_balance": 2,
         }, min_score=8.0)
         results = [
             self._l2_result(
@@ -890,15 +881,38 @@ class CollectionRuleTests(unittest.TestCase):
 
         selected, metadata = selector.select(results)
 
-        self.assertEqual(len(selected), 2)
-        self.assertEqual(metadata["source_counts"]["official"], 1)
-        self.assertEqual(metadata["source_counts"]["independent"], 1)
+        self.assertEqual(len(selected), 3)
+        self.assertEqual(metadata["source_counts"]["official"], 3)
+        outcomes = {item["url_hash"]: item["reason"] for item in metadata["article_outcomes"]}
+        self.assertIn("excluded_by_capacity", outcomes.values())
+
+    def test_need_deep_analysis_hint_does_not_block_l3_selection(self):
+        selector = L3CandidateSelector({
+            "max_candidates_per_batch": 3,
+            "topic_similarity_threshold": 0.95,
+        }, min_score=6.0)
+        result = self._l2_result("official", 1, score=7.0)
+        result["analysis"]["need_deep_analysis"] = False
+
+        selected, _ = selector.select([result])
+
+        self.assertEqual(len(selected), 1)
+
+    def test_need_deep_analysis_hint_does_not_block_l3_execution(self):
+        analyzer = L3Analyzer(
+            llm=object(),
+            prompts=object(),
+            min_score=6.0,
+            require_full_content=False,
+        )
+        result = self._l2_result("official", 1, score=7.0)
+        result["analysis"]["need_deep_analysis"] = False
+
+        self.assertTrue(analyzer.should_trigger(result))
 
     def test_l3_high_score_releases_do_not_expand_batch_capacity(self):
         selector = L3CandidateSelector({
-            "enabled": True,
             "max_candidates_per_batch": 1,
-            "max_category_ratio": 1.0,
             "topic_similarity_threshold": 0.95,
         }, min_score=7.0)
         results = [

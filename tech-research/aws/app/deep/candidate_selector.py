@@ -1,7 +1,6 @@
-"""Balanced L3 candidate selection using the shared L2 rank score."""
+"""L3 candidate selection using topic deduplication and the shared rank score."""
 
 import json
-import math
 import re
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -44,7 +43,7 @@ def _title_terms(title: str) -> Set[str]:
 
 
 class L3CandidateSelector:
-    """Collapse repeated topics and apply uniform source/category constraints."""
+    """Collapse repeated topics and retain the highest-scoring candidates."""
 
     def __init__(
         self,
@@ -54,18 +53,10 @@ class L3CandidateSelector:
     ):
         self.config = config
         self.min_score = min_score
+        # Kept for constructor compatibility; source identity no longer affects selection.
         self.source_profiles = source_profiles or {}
-        self.enabled = bool(config.get("enabled", True))
-        self.max_candidates = max(1, int(config.get("max_candidates_per_batch", 36)))
-        self.max_category_ratio = float(config.get("max_category_ratio", 0.35))
+        self.max_candidates = max(1, int(config.get("max_candidates_per_batch", 50)))
         self.similarity_threshold = float(config.get("topic_similarity_threshold", 0.34))
-        self.min_sources_for_balance = max(1, int(config.get("min_sources_for_balance", 3)))
-        self.min_categories_for_balance = max(1, int(config.get("min_categories_for_balance", 2)))
-        self.source_role_ratios = {
-            "engineering": float(config.get("engineering_source_ratio", 0.15)),
-            "industry": float(config.get("industry_source_ratio", 0.10)),
-            "research": float(config.get("research_source_ratio", 0.05)),
-        }
 
     def select(
         self,
@@ -85,41 +76,14 @@ class L3CandidateSelector:
             eligible.append(item)
             outcomes[url_hash] = self._outcome(result, "eligible")
 
-        eligible.sort(key=lambda item: item["rank_score"], reverse=True)
+        eligible.sort(key=self._sort_key, reverse=True)
         topics = self._cluster(eligible, outcomes)
         capacity = min(self.max_candidates, len(topics))
-        source_total = len({topic["source_code"] for topic in topics})
-        category_total = len({topic["category"] for topic in topics})
-        constraints_needed = len(topics) > self.max_candidates
-        source_balance_active = (
-            constraints_needed and source_total >= self.min_sources_for_balance
-        )
-        category_balance_active = (
-            constraints_needed and category_total >= self.min_categories_for_balance
-        )
-
-        if not self.enabled or not constraints_needed:
-            selected = topics[:capacity]
-            source_limits = {}
-            category_limit = capacity
-        else:
-            source_limits = {
-                source: self._source_limit(source)
-                for source in {topic["source_code"] for topic in topics}
-            }
-            category_limit = max(1, math.ceil(self.max_candidates * self.max_category_ratio))
-            selected = self._select_balanced(
-                topics,
-                capacity,
-                source_limits,
-                category_limit,
-                source_balance_active,
-                category_balance_active,
-            )
+        selected = topics[:capacity]
 
         selected_ids = {topic["topic_id"] for topic in selected}
         for topic in topics:
-            reason = "selected" if topic["topic_id"] in selected_ids else "excluded_by_balance"
+            reason = "selected" if topic["topic_id"] in selected_ids else "excluded_by_capacity"
             outcomes[topic["topic_id"]] = self._outcome(topic["result"], reason)
 
         source_counts = Counter(topic["source_code"] for topic in selected)
@@ -130,12 +94,9 @@ class L3CandidateSelector:
             "selected": len(selected),
             "excluded": max(0, len(eligible) - len(selected)),
             "capacity": self.max_candidates,
-            "source_limits": source_limits,
-            "category_limit": category_limit,
+            "selection_mode": "rank_only",
             "source_counts": dict(source_counts),
             "category_counts": dict(category_counts),
-            "source_balance_active": source_balance_active,
-            "category_balance_active": category_balance_active,
             "article_outcomes": list(outcomes.values()),
             "selected_articles": [
                 {
@@ -150,72 +111,13 @@ class L3CandidateSelector:
             ],
         }
         logger.info(
-            "L3 候选均衡完成: eligible=%d, topics=%d, selected=%d, sources=%d",
+            "L3 候选排序完成: eligible=%d, topics=%d, selected=%d, sources=%d",
             len(eligible),
             len(topics),
             len(selected),
             len(source_counts),
         )
         return [topic["result"] for topic in selected], metadata
-
-    def _select_balanced(
-        self,
-        topics: List[Dict[str, Any]],
-        capacity: int,
-        source_limits: Dict[str, int],
-        category_limit: int,
-        source_balance_active: bool,
-        category_balance_active: bool,
-    ) -> List[Dict[str, Any]]:
-        selected: List[Dict[str, Any]] = []
-        selected_ids = set()
-        source_counts = Counter()
-        category_counts = Counter()
-
-        while len(selected) < capacity:
-            remaining = [
-                topic for topic in topics if topic["topic_id"] not in selected_ids
-            ]
-            if not remaining:
-                break
-            sources = sorted(
-                {topic["source_code"] for topic in remaining},
-                key=lambda source: (
-                    source_counts[source],
-                    -max(
-                        topic["rank_score"]
-                        for topic in remaining
-                        if topic["source_code"] == source
-                    ),
-                ),
-            )
-            progressed = False
-            for source in sources:
-                if (
-                    source_balance_active
-                    and source_counts[source] >= source_limits[source]
-                ):
-                    continue
-                candidate = next((
-                    topic for topic in remaining
-                    if topic["source_code"] == source
-                    and (
-                        not category_balance_active
-                        or category_counts[topic["category"]] < category_limit
-                    )
-                ), None)
-                if not candidate:
-                    continue
-                selected.append(candidate)
-                selected_ids.add(candidate["topic_id"])
-                source_counts[source] += 1
-                category_counts[candidate["category"]] += 1
-                progressed = True
-                if len(selected) >= capacity:
-                    break
-            if not progressed:
-                break
-        return selected
 
     def _eligibility_reason(self, result: Dict[str, Any]) -> str:
         article = result.get("article")
@@ -224,8 +126,6 @@ class L3CandidateSelector:
             return "article_missing"
         if self._rank_score(analysis) < self.min_score:
             return "score_below_threshold"
-        if analysis.get("need_deep_analysis") is False:
-            return "deep_analysis_not_needed"
         return ""
 
     def _enrich(self, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -270,11 +170,17 @@ class L3CandidateSelector:
                 topics.append(dict(item))
         return topics
 
-    def _source_limit(self, source_code: str) -> int:
-        profile = self.source_profiles.get(source_code, {})
-        role = str(profile.get("selection_role") or "engineering")
-        ratio = self.source_role_ratios.get(role, self.source_role_ratios["engineering"])
-        return max(1, math.ceil(self.max_candidates * ratio))
+    @classmethod
+    def _sort_key(cls, item: Dict[str, Any]) -> Tuple[float, ...]:
+        analysis = item.get("result", {}).get("analysis", {})
+        return (
+            item["rank_score"],
+            _number(analysis.get("score_org_relevance")),
+            _number(analysis.get("score_engineering")),
+            _number(analysis.get("score_trend")),
+            _number(analysis.get("score_tech_depth")),
+            _number(analysis.get("score_timeliness")),
+        )
 
     @staticmethod
     def _rank_score(analysis: Dict[str, Any]) -> float:

@@ -1,7 +1,6 @@
-"""L4 topic aggregation and balanced selection using the shared rank score."""
+"""L4 topic aggregation and selection using the shared rank score."""
 
 import json
-import math
 import re
 from collections import Counter
 from typing import Dict, List, Set, Tuple
@@ -55,10 +54,10 @@ def _title_terms(title: str) -> Set[str]:
 
 
 class BriefingSelector:
-    """Aggregate successful L3 material and apply auditable soft quotas.
+    """Aggregate successful L3 material and select the highest-scoring topics.
 
     The selector never recalculates article value and has no identity-based
-    exceptions. Every topic uses the L2 ``rank_score`` and the same limits.
+    exceptions. Source and category distributions are observations only.
     """
 
     def __init__(self, config: Dict):
@@ -68,7 +67,7 @@ class BriefingSelector:
 
     def select(self, articles: List[Dict], briefing_type: str) -> Tuple[List[Dict], Dict]:
         target = int(self.config.get(f"target_{briefing_type}", self.config.get("target_topic", 12)))
-        minimum_score = float(self.config.get("min_rank_score", 6.5))
+        minimum_score = float(self.config.get("min_rank_score", 6.0))
 
         enriched = [self._enrich(article) for article in articles]
         candidates = [
@@ -77,42 +76,14 @@ class BriefingSelector:
         ]
         candidates.sort(key=lambda item: item["rank_score"], reverse=True)
         topics = self._cluster(candidates)
-
-        source_values = {topic["primary"]["source_code"] for topic in topics}
-        category_values = {topic["category"] for topic in topics}
-        source_balance_active = len(source_values) >= int(
-            self.config.get("min_sources_for_balance", 3)
-        )
-        category_balance_active = len(category_values) >= int(
-            self.config.get("min_categories_for_balance", 2)
-        )
-
-        # Sparse periods keep every qualified topic. Quotas only narrow a pool
-        # that is larger than the configured report target.
-        if len(topics) <= target:
-            selected = list(topics)
-            outcomes = {
-                topic["topic_id"]: "selected" for topic in topics
-            }
-        else:
-            source_limit = max(
-                1,
-                math.ceil(target * float(self.config.get("max_primary_source_ratio", 0.15))),
+        selected = topics[:target]
+        selected_ids = {topic["topic_id"] for topic in selected}
+        outcomes = {
+            topic["topic_id"]: (
+                "selected" if topic["topic_id"] in selected_ids else "excluded_by_capacity"
             )
-            dynamic_category_limit = math.ceil(target / max(1, len(category_values)))
-            category_limit = max(
-                1,
-                min(
-                    dynamic_category_limit,
-                    math.ceil(target * float(self.config.get("max_category_ratio", 0.35))),
-                ),
-            )
-            selected, outcomes = self._select_with_limits(
-                topics,
-                target,
-                source_limit if source_balance_active else None,
-                category_limit if category_balance_active else None,
-            )
+            for topic in topics
+        }
 
         selected.sort(key=self._display_order)
         source_counts = Counter(topic["primary"]["source_code"] for topic in selected)
@@ -127,8 +98,7 @@ class BriefingSelector:
             "selected_topics": len(selected),
             "target_topics": target,
             "shortfall_topics": max(0, target - len(selected)),
-            "source_balance_active": source_balance_active,
-            "category_balance_active": category_balance_active,
+            "selection_mode": "rank_only",
             "source_counts": dict(source_counts),
             "category_counts": dict(category_counts),
             "info_type_counts": dict(info_type_counts),
@@ -149,35 +119,6 @@ class BriefingSelector:
             ],
         }
         return selected, metadata
-
-    @staticmethod
-    def _select_with_limits(
-        topics: List[Dict],
-        target: int,
-        source_limit: int,
-        category_limit: int,
-    ) -> Tuple[List[Dict], Dict[str, str]]:
-        selected = []
-        source_counts = Counter()
-        category_counts = Counter()
-        outcomes = {}
-        for topic in topics:
-            if len(selected) >= target:
-                outcomes[topic["topic_id"]] = "excluded_by_capacity"
-                continue
-            source = topic["primary"]["source_code"]
-            category = topic["category"]
-            if source_limit is not None and source_counts[source] >= source_limit:
-                outcomes[topic["topic_id"]] = "excluded_by_source_balance"
-                continue
-            if category_limit is not None and category_counts[category] >= category_limit:
-                outcomes[topic["topic_id"]] = "excluded_by_category_balance"
-                continue
-            selected.append(topic)
-            source_counts[source] += 1
-            category_counts[category] += 1
-            outcomes[topic["topic_id"]] = "selected"
-        return selected, outcomes
 
     def _enrich(self, article: Dict) -> Dict:
         enriched = dict(article)

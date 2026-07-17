@@ -64,16 +64,12 @@ class BriefingSelectorTests(unittest.TestCase):
         self.config = {
             "target_weekly": 8,
             "target_topic": 8,
-            "min_rank_score": 6.5,
-            "max_primary_source_ratio": 0.15,
-            "max_category_ratio": 0.35,
-            "min_sources_for_balance": 3,
-            "min_categories_for_balance": 2,
+            "min_rank_score": 6.0,
             "topic_similarity_threshold": 0.34,
             "max_articles_per_topic": 3,
         }
 
-    def test_selection_uses_shared_rank_and_balances_primary_source(self):
+    def test_selection_uses_shared_rank_without_primary_source_quota(self):
         candidates = [
             article(index, "aws", "AI基础设施", "研究论文", 9.5 - index * 0.1)
             for index in range(1, 7)
@@ -85,15 +81,15 @@ class BriefingSelectorTests(unittest.TestCase):
         selected, metadata = BriefingSelector(self.config).select(candidates, "weekly")
 
         self.assertEqual(len(selected), 8)
-        self.assertLessEqual(metadata["source_counts"].get("aws", 0), 2)
+        self.assertEqual(metadata["source_counts"].get("aws", 0), 6)
+        self.assertEqual(metadata["selection_mode"], "rank_only")
         self.assertNotIn("report_rank_score", selected[0])
         self.assertNotIn("must_include", selected[0])
 
-    def test_high_score_release_does_not_bypass_source_limit(self):
+    def test_high_score_release_is_not_replaced_for_source_diversity(self):
         config = {
             **self.config,
             "target_weekly": 3,
-            "max_primary_source_ratio": 0.20,
         }
         candidates = [
             article(1, "official", "大模型基础技术", "模型发布", 9.9, title="Alpha official release"),
@@ -105,9 +101,9 @@ class BriefingSelectorTests(unittest.TestCase):
 
         selected, metadata = BriefingSelector(config).select(candidates, "weekly")
 
-        self.assertEqual(metadata["source_counts"].get("official"), 1)
+        self.assertEqual(metadata["source_counts"].get("official"), 3)
         self.assertEqual(len(selected), 3)
-        self.assertNotIn("major_event_topics", metadata)
+        self.assertEqual(metadata["selection_mode"], "rank_only")
 
     def test_same_event_from_two_sources_is_one_topic(self):
         first = article(1, "source-a", "大模型基础技术", "模型发布", title="GPT 5.6 official model release")

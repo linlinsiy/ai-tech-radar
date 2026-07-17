@@ -174,11 +174,11 @@ class L2Analyzer:
         # 时效性由可核验元数据确定，不接受模型猜测值。
         scores["timeliness"] = timeliness
         rank_score = (
-            scores.get("engineering", 5.0) * 0.25
-            + scores.get("org_relevance", 5.0) * 0.25
-            + scores.get("trend", 5.0) * 0.35
-            + scores.get("timeliness", 5.0) * 0.05
+            scores.get("org_relevance", 5.0) * 0.35
+            + scores.get("trend", 5.0) * 0.30
+            + scores.get("engineering", 5.0) * 0.20
             + scores.get("tech_depth", 5.0) * 0.10
+            + scores.get("timeliness", 5.0) * 0.05
         )
         need_deep_analysis = parsed.get("need_deep_analysis")
         if need_deep_analysis is None:
@@ -383,8 +383,8 @@ class L2Analyzer:
         }
         result = {}
         for key, candidates in score_keys.items():
-            value = 5.0  # 默认中等
-            minimum = 0.0 if key in {"org_relevance", "trend", "timeliness"} else 1.0
+            value = 0.0  # 缺失评分不获得默认中等分
+            minimum = 0.0
             for c in candidates:
                 if c in parsed:
                     try:
@@ -395,5 +395,11 @@ class L2Analyzer:
                     except (ValueError, TypeError):
                         pass
             result[key] = value
+        # 组织相关性使用固定锚点，避免模型评分再次集中在 7-8 分。
+        anchors = (0.0, 1.0, 3.0, 6.0, 8.0, 10.0)
+        raw_org_score = result["org_relevance"]
+        result["org_relevance"] = max(
+            anchor for anchor in anchors if anchor <= raw_org_score
+        )
         return result
 

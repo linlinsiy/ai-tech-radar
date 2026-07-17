@@ -124,7 +124,7 @@ class AWSConfig:
 
     @staticmethod
     def _default_selection_role(source_type: str) -> str:
-        """Map source type to the L3/L4 soft-quota role."""
+        """Populate the legacy source analysis role for import compatibility."""
         normalized = str(source_type or "").strip()
         if normalized == "academic":
             return "research"
@@ -200,7 +200,7 @@ class AWSConfig:
                 return float(configured)
             except ValueError:
                 pass
-        return self.get_float("deep_insight.min_value_score", 6.5)
+        return self.get_float("deep_insight.min_value_score", 6.0)
 
     @property
     def deep_insight_require_full_content(self) -> bool:
@@ -243,28 +243,11 @@ class AWSConfig:
 
     @property
     def l3_selection_config(self) -> Dict:
-        """L3 前置主题聚合和来源均衡配置。"""
+        """L3 前置主题聚合和统一评分排序配置。"""
         return {
-            "enabled": self.get(option="l3_selection.enabled", fallback="true").lower() == "true",
-            "max_candidates_per_batch": self.get_int("l3_selection.max_candidates_per_batch", 36),
-            "max_category_ratio": self.get_float("l3_selection.max_category_ratio", 0.35),
+            "max_candidates_per_batch": self.get_int("l3_selection.max_candidates_per_batch", 50),
             "topic_similarity_threshold": self.get_float(
                 "l3_selection.topic_similarity_threshold", 0.34
-            ),
-            "engineering_source_ratio": self.get_float(
-                "l3_selection.engineering_source_ratio", 0.15
-            ),
-            "industry_source_ratio": self.get_float(
-                "l3_selection.industry_source_ratio", 0.10
-            ),
-            "research_source_ratio": self.get_float(
-                "l3_selection.research_source_ratio", 0.05
-            ),
-            "min_sources_for_balance": self.get_int(
-                "l3_selection.min_sources_for_balance", 3
-            ),
-            "min_categories_for_balance": self.get_int(
-                "l3_selection.min_categories_for_balance", 2
             ),
         }
 

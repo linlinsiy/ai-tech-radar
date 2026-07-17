@@ -78,7 +78,7 @@ class L3Analyzer:
         """
         判断是否触发 L3 深度洞察
 
-        条件：rank_score >= min_score、L2建议深度分析且正文满足要求
+        条件：rank_score >= min_score 且正文满足要求
 
         入参：
             l2_result: L2 分析结果 {"article": RawArticle, "analysis": {...}}
@@ -90,10 +90,6 @@ class L3Analyzer:
         score = _rank_score(analysis)
         if score < self.min_score:
             logger.info("L3 不触发: rank_score=%.1f < %.1f", score, self.min_score)
-            return False
-
-        if analysis.get("need_deep_analysis") is False:
-            logger.info("L3 不触发: L2 判断正文技术细节不足")
             return False
 
         if self.require_full_content:
@@ -248,8 +244,6 @@ class L3Analyzer:
         score = _rank_score(analysis)
         if score < self.min_score:
             return "score_below_threshold"
-        if analysis.get("need_deep_analysis") is False:
-            return "deep_analysis_not_needed"
         if self.require_full_content and article and not article.raw_html:
             return "full_content_failed"
         return "not_triggered"

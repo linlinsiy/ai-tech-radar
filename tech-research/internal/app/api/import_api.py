@@ -127,7 +127,7 @@ class AnalysisItem(BaseModel):
 
     score_engineering: Optional[float] = Field(None, ge=1.0, le=10.0, description="工程参考价值")
 
-    score_org_relevance: Optional[float] = Field(None, ge=0.0, le=10.0, description="组织相关性")
+    score_org_relevance: Optional[float] = Field(None, ge=0.0, le=10.0, description="券商技术岗位领域匹配度")
 
     score_trend: Optional[float] = Field(None, ge=0.0, le=10.0, description="趋势重要性")
 

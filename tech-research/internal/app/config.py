@@ -183,17 +183,13 @@ class InternalConfig:
 
     @property
     def briefing_selection_config(self) -> Dict:
-        """L4 选题数量、统一评分门槛及软配额。"""
+        """L4 选题数量、统一评分门槛及主题聚合配置。"""
         return {
             "target_weekly": self._config.getint("DEFAULT", "briefing.selection.target_weekly", fallback=8),
             "target_monthly": self._config.getint("DEFAULT", "briefing.selection.target_monthly", fallback=14),
             "target_quarterly": self._config.getint("DEFAULT", "briefing.selection.target_quarterly", fallback=18),
             "target_topic": self._config.getint("DEFAULT", "briefing.selection.target_topic", fallback=12),
-            "min_rank_score": self._config.getfloat("DEFAULT", "briefing.selection.min_rank_score", fallback=6.5),
-            "max_primary_source_ratio": self._config.getfloat("DEFAULT", "briefing.selection.max_primary_source_ratio", fallback=0.15),
-            "max_category_ratio": self._config.getfloat("DEFAULT", "briefing.selection.max_category_ratio", fallback=0.35),
-            "min_sources_for_balance": self._config.getint("DEFAULT", "briefing.selection.min_sources_for_balance", fallback=3),
-            "min_categories_for_balance": self._config.getint("DEFAULT", "briefing.selection.min_categories_for_balance", fallback=2),
+            "min_rank_score": self._config.getfloat("DEFAULT", "briefing.selection.min_rank_score", fallback=6.0),
             "topic_similarity_threshold": self._config.getfloat("DEFAULT", "briefing.selection.topic_similarity_threshold", fallback=0.34),
             "max_articles_per_topic": self._config.getint("DEFAULT", "briefing.selection.max_articles_per_topic", fallback=3),
         }

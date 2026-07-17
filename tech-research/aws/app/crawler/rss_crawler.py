@@ -72,7 +72,7 @@ class RSSCrawler(BaseCrawler):
         super().__init__(source)
         self.source = dict(source)
         self.timeout = _safe_int(source.get("timeout_seconds"), 20)
-        # 仅作为异常 Feed 的技术保护，不参与最终报告来源均衡。
+        # 仅作为异常 Feed 的技术保护，不参与最终报告选题。
         self.max_articles = _safe_int(
             source.get("_candidate_limit", source.get("max_articles")), 100
         )
