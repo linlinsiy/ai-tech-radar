@@ -118,13 +118,17 @@ class AnalysisItem(BaseModel):
 
     score_engineering: Optional[float] = Field(None, ge=1.0, le=10.0, description="工程参考价值")
 
+    score_org_relevance: Optional[float] = Field(None, ge=1.0, le=10.0, description="组织相关性")
+
     score_trend: Optional[float] = Field(None, ge=1.0, le=10.0, description="趋势重要性")
 
     score_credibility: Optional[float] = Field(None, ge=1.0, le=10.0, description="来源可信度")
 
     score_timeliness: Optional[float] = Field(None, ge=1.0, le=10.0, description="时效性")
 
-    value_score: Optional[float] = Field(None, ge=0.0, le=10.0, description="综合价值评分")
+    value_score: Optional[float] = Field(None, ge=0.0, le=10.0, description="旧字段兼容评分")
+
+    rank_score: Optional[float] = Field(None, ge=0.0, le=10.0, description="统一排序评分")
 
     model_name: Optional[str] = Field(None, description="调用模型")
 
@@ -488,6 +492,7 @@ async def handle_import(request: Request, body: ImportRequest):
 
             try:
 
+                rank_score = item.rank_score if item.rank_score is not None else item.value_score
                 analysis_values = {
                     "summary_cn": item.summary_cn,
                     "category": item.category,
@@ -500,10 +505,12 @@ async def handle_import(request: Request, body: ImportRequest):
                     "companies": item.companies or None,
                     "score_tech_depth": item.score_tech_depth,
                     "score_engineering": item.score_engineering,
+                    "score_org_relevance": item.score_org_relevance,
                     "score_trend": item.score_trend,
                     "score_credibility": item.score_credibility,
                     "score_timeliness": item.score_timeliness,
-                    "value_score": item.value_score,
+                    "value_score": rank_score,
+                    "rank_score": rank_score,
                     "model_name": item.model_name,
                     "prompt_version": item.prompt_version,
                     "analysis_status": "success",
@@ -680,6 +687,11 @@ async def handle_import(request: Request, body: ImportRequest):
                             author=item.author, publish_time=item.publish_time,
 
                             value_score=matched.value_score if matched else None,
+                            rank_score=(
+                                matched.rank_score
+                                if matched and matched.rank_score is not None
+                                else matched.value_score if matched else None
+                            ),
 
                         )
 

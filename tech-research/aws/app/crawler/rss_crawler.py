@@ -78,12 +78,15 @@ class RSSCrawler(BaseCrawler):
 
     def _request_feed(self, url: str):
         """请求 RSS URL，统一设置浏览器 UA、超时和重定向。"""
-        return requests.get(
+        response = requests.get(
             url,
             timeout=self.timeout,
             headers=RSS_REQUEST_HEADERS,
             allow_redirects=True,
         )
+        self.last_http_status = response.status_code
+        self.last_effective_url = response.url
+        return response
 
     @staticmethod
     def _is_allowed_content_type(content_type: str) -> bool:
@@ -189,12 +192,15 @@ class RSSCrawler(BaseCrawler):
         try:
             feed = self._load_feed()
         except requests.Timeout:
+            self.last_error = f"request timeout after {self.timeout}s"
             logger.error("[%s] RSS 请求超时: timeout=%ss", self.source_code, self.timeout)
             return []
         except requests.RequestException as e:
+            self.last_error = str(e)
             logger.error("[%s] RSS 请求失败: %s", self.source_code, str(e))
             return []
         except Exception as e:
+            self.last_error = str(e)
             logger.error("[%s] RSS 解析失败: %s", self.source_code, str(e))
             return []
 

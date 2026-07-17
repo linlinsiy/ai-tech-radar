@@ -54,10 +54,21 @@ def create_app(config: AWSConfig):
     app.get("/health", response_model=None)(health_check)
 
     # 注册手动触发接口路由（绕过 XXL-Job 直接调用）
-    from api.jobs_api import trigger_collect, trigger_health_check
+    from api.jobs_api import (
+        trigger_collect,
+        trigger_health_check,
+        trigger_validation_analysis,
+        trigger_validation_collect,
+    )
     app.post("/api/v1/jobs/collect", response_model=None)(trigger_collect)
     app.post("/api/v1/jobs/health-check", response_model=None)(trigger_health_check)
-    logger.info("手动触发接口已注册: POST /api/v1/jobs/collect, POST /api/v1/jobs/health-check")
+    app.post("/api/v1/validation/collect", response_model=None)(trigger_validation_collect)
+    app.post("/api/v1/validation/analyze", response_model=None)(trigger_validation_analysis)
+    logger.info(
+        "手动触发接口已注册: POST /api/v1/jobs/collect, "
+        "POST /api/v1/jobs/health-check, POST /api/v1/validation/collect, "
+        "POST /api/v1/validation/analyze"
+    )
 
     @app.on_event("startup")
     async def startup_scheduler():

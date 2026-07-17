@@ -7,10 +7,24 @@ from datetime import datetime
 APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app"))
 sys.path.insert(0, APP_DIR)
 
+from jobs.briefing_render import (
+    assemble_briefing,
+    topic_marker,
+    validate_briefing,
+    validate_section,
+)
 from jobs.briefing_selector import BriefingSelector, _string_values
 
 
-def article(article_id, source, category, info_type, engineering, trend=8, credibility=8, title=None):
+def article(
+    article_id,
+    source,
+    category,
+    info_type,
+    rank_score=7.5,
+    credibility=8,
+    title=None,
+):
     return {
         "id": article_id,
         "title": title or f"主题 {article_id}",
@@ -18,20 +32,29 @@ def article(article_id, source, category, info_type, engineering, trend=8, credi
         "publish_time": datetime(2026, 7, 1),
         "source_code": source,
         "source_name": source,
+        "selection_role": "industry",
         "category": category,
         "sub_category": "",
         "info_type": info_type,
-        "briefing_focus": "",
-        "summary_cn": f"主题 {article_id} 的摘要",
+        "briefing_focus": f"主题 {article_id} 的核心变化。",
+        "summary_cn": f"主题 {article_id} 的摘要。",
         "keywords": f"keyword-{article_id}",
         "tech_tags": [],
         "companies": [],
         "score_tech_depth": 7,
-        "score_engineering": engineering,
-        "score_trend": trend,
+        "score_engineering": 8,
+        "score_org_relevance": 8,
+        "score_trend": 8,
         "score_credibility": credibility,
         "score_timeliness": 9,
-        "value_score": 7.5,
+        "rank_score": rank_score,
+        "value_score": rank_score,
+        "insight_id": article_id,
+        "technical_background": "背景",
+        "core_problem": "核心事实",
+        "technical_solution": "方案或变化",
+        "impact_analysis": "影响",
+        "reference_value": "边界",
     }
 
 
@@ -43,69 +66,126 @@ class BriefingSelectorTests(unittest.TestCase):
         self.config = {
             "target_weekly": 8,
             "target_topic": 8,
-            "min_value_score": 5.5,
-            "max_primary_topics_per_source": 2,
-            "max_primary_source_ratio": 0.2,
+            "min_rank_score": 6.5,
+            "min_credibility_score": 6.5,
+            "max_primary_source_ratio": 0.15,
             "max_category_ratio": 0.35,
-            "engineering_ratio": 0.55,
-            "research_ratio": 0.25,
+            "min_sources_for_balance": 3,
+            "min_categories_for_balance": 2,
             "topic_similarity_threshold": 0.34,
             "max_articles_per_topic": 3,
         }
 
-    def test_selection_balances_source_and_prefers_engineering(self):
+    def test_selection_uses_shared_rank_and_balances_primary_source(self):
         candidates = [
-            article(index, "aws", "AI基础设施", "研究论文", 5)
+            article(index, "aws", "AI基础设施", "研究论文", 9.5 - index * 0.1)
             for index in range(1, 7)
         ]
         categories = ["Agent与智能体", "开源生态", "生成式AI应用", "安全与伦理", "行业动态", "多模态技术"]
         for offset, category in enumerate(categories, 10):
-            candidates.append(article(offset, f"source-{offset}", category, "工程实践", 9))
+            candidates.append(article(offset, f"source-{offset}", category, "工程实践", 8.0))
 
         selected, metadata = BriefingSelector(self.config).select(candidates, "weekly")
+
         self.assertEqual(len(selected), 8)
         self.assertLessEqual(metadata["source_counts"].get("aws", 0), 2)
-        self.assertGreaterEqual(metadata["lane_counts"].get("engineering", 0), 5)
+        self.assertNotIn("report_rank_score", selected[0])
+        self.assertNotIn("must_include", selected[0])
 
-    def test_major_event_can_bypass_source_soft_limit(self):
+    def test_high_score_release_does_not_bypass_source_limit(self):
+        config = {
+            **self.config,
+            "target_weekly": 3,
+            "max_primary_source_ratio": 0.20,
+        }
         candidates = [
-            article(1, "openai", "大模型基础技术", "工程实践", 9, title="Agent runtime engineering"),
-            article(2, "openai", "Agent与智能体", "工程实践", 9, title="Agent memory platform"),
-            article(3, "openai", "大模型基础技术", "模型发布", 8, trend=9, credibility=9, title="GPT 5.6 official release"),
+            article(1, "official", "大模型基础技术", "模型发布", 9.9, title="Alpha official release"),
+            article(2, "official", "Agent与智能体", "模型发布", 9.8, title="Beta official release"),
+            article(3, "official", "多模态技术", "模型发布", 9.7, title="Gamma official release"),
+            article(4, "source-b", "行业动态", "行业动态", 8.0),
+            article(5, "source-c", "开源生态", "开源项目", 7.9),
         ]
-        for index in range(4, 10):
-            candidates.append(article(index, f"source-{index}", "行业动态", "行业动态", 7))
 
-        selected, metadata = BriefingSelector(self.config).select(candidates, "weekly")
-        titles = {topic["title"] for topic in selected}
-        self.assertIn("GPT 5.6 official release", titles)
-        self.assertIn("GPT 5.6 official release", metadata["major_event_topics"])
+        selected, metadata = BriefingSelector(config).select(candidates, "weekly")
+
+        self.assertEqual(metadata["source_counts"].get("official"), 1)
+        self.assertEqual(len(selected), 3)
+        self.assertNotIn("major_event_topics", metadata)
 
     def test_same_event_from_two_sources_is_one_topic(self):
-        first = article(1, "source-a", "大模型基础技术", "模型发布", 8, title="GPT 5.6 official model release")
-        second = article(2, "source-b", "大模型基础技术", "行业动态", 7, title="GPT 5.6 official model release details")
+        first = article(1, "source-a", "大模型基础技术", "模型发布", title="GPT 5.6 official model release")
+        second = article(2, "source-b", "大模型基础技术", "行业动态", title="GPT 5.6 official model release details")
+
         selected, _ = BriefingSelector({**self.config, "target_weekly": 2}).select([first, second], "weekly")
+
         self.assertEqual(len(selected), 1)
         self.assertEqual(len(selected[0]["articles"]), 2)
 
-    def test_all_major_events_expand_report_target(self):
+    def test_qualified_topics_do_not_expand_report_target(self):
         candidates = [
-            article(
-                1, "official", "大模型基础技术", "模型发布", 9,
-                trend=9.5, credibility=9, title="Alpha model official release",
-            ),
-            article(
-                2, "official", "AI基础设施", "产品发布", 9,
-                trend=9.4, credibility=9, title="Inference platform major launch",
-            ),
+            article(1, "official", "大模型基础技术", "模型发布", 9.8, title="Alpha model official release"),
+            article(2, "official", "AI基础设施", "产品发布", 9.7, title="Inference platform launch"),
         ]
 
-        selected, metadata = BriefingSelector({
-            **self.config, "target_weekly": 1,
-        }).select(candidates, "weekly")
+        selected, metadata = BriefingSelector({**self.config, "target_weekly": 1}).select(candidates, "weekly")
 
-        self.assertEqual(len(selected), 2)
-        self.assertEqual(metadata["selection_capacity"], 2)
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(metadata["target_topics"], 1)
+
+    def test_low_credibility_topic_is_rejected_even_with_high_rank(self):
+        candidates = [
+            article(1, "unknown", "行业动态", "行业动态", rank_score=9.5, credibility=4.0)
+        ]
+
+        selected, metadata = BriefingSelector(self.config).select(candidates, "weekly")
+
+        self.assertEqual(selected, [])
+        self.assertEqual(metadata["candidate_articles"], 0)
+
+    def test_l5_assembly_validates_four_topic_counts_and_sources(self):
+        primary = article(1, "source-a", "Agent与智能体", "工程实践")
+        topic = {
+            "topic_id": "1",
+            "title": primary["title"],
+            "category": primary["category"],
+            "rank_score": primary["rank_score"],
+            "primary": primary,
+            "articles": [primary],
+        }
+        marker = topic_marker(topic)
+        section = (
+            f"## Agent与智能体\n\n<!-- topic:{marker} -->\n"
+            f"### {topic['title']}\n正文。\n\n来源：[source-a]({primary['url']})"
+        )
+        section_check = validate_section("Agent与智能体", [topic], section)
+        content = assemble_briefing(
+            "2026-07-01 ~ 2026-07-31", "导语。", [topic], [section]
+        )
+        validation = validate_briefing([topic], content, [section_check])
+
+        self.assertTrue(section_check["valid"])
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["l4_topic_count"], 1)
+        self.assertEqual(validation["overview_topic_count"], 1)
+        self.assertEqual(validation["body_topic_count"], 1)
+        self.assertEqual(validation["index_topic_count"], 1)
+
+    def test_l5_section_rejects_missing_marker_and_source(self):
+        primary = article(1, "source-a", "Agent与智能体", "工程实践")
+        topic = {
+            "topic_id": "1",
+            "title": primary["title"],
+            "category": primary["category"],
+            "rank_score": primary["rank_score"],
+            "primary": primary,
+            "articles": [primary],
+        }
+
+        check = validate_section("Agent与智能体", [topic], "## Agent与智能体\n正文")
+
+        self.assertFalse(check["valid"])
+        self.assertIn("topic_marker_mismatch", check["errors"])
+        self.assertIn("source_link_missing", check["errors"])
 
 
 if __name__ == "__main__":

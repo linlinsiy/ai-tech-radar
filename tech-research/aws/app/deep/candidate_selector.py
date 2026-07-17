@@ -1,16 +1,15 @@
-"""Balanced candidate selection before expensive L3 analysis."""
+"""Balanced L3 candidate selection using the shared L2 rank score."""
 
 import json
 import math
 import re
 from collections import Counter
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from logging_config import get_logger
 
-logger = get_logger("deep.candidate_selector")
 
-MAJOR_EVENT_TYPES = {"模型发布", "产品发布", "开源项目", "政策监管"}
+logger = get_logger("deep.candidate_selector")
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -45,111 +44,112 @@ def _title_terms(title: str) -> Set[str]:
 
 
 class L3CandidateSelector:
-    """Collapse repeated topics and balance L3 candidates across sources."""
+    """Collapse repeated topics and apply uniform source/category constraints."""
 
-    def __init__(self, config: Dict[str, Any], min_score: float):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        min_score: float,
+        source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
         self.config = config
         self.min_score = min_score
+        self.source_profiles = source_profiles or {}
         self.enabled = bool(config.get("enabled", True))
         self.max_candidates = max(1, int(config.get("max_candidates_per_batch", 36)))
-        self.max_per_source = max(1, int(config.get("max_candidates_per_source", 3)))
-        self.max_source_ratio = float(config.get("max_source_ratio", 0.2))
         self.max_category_ratio = float(config.get("max_category_ratio", 0.35))
         self.similarity_threshold = float(config.get("topic_similarity_threshold", 0.34))
-        self.max_major_exceptions = max(0, int(config.get("max_major_event_exceptions", 0)))
+        self.min_credibility = float(config.get("min_credibility_score", 6.5))
         self.min_sources_for_balance = max(1, int(config.get("min_sources_for_balance", 3)))
         self.min_categories_for_balance = max(1, int(config.get("min_categories_for_balance", 2)))
+        self.source_role_ratios = {
+            "engineering": float(config.get("engineering_source_ratio", 0.15)),
+            "industry": float(config.get("industry_source_ratio", 0.10)),
+            "research": float(config.get("research_source_ratio", 0.05)),
+        }
 
-    def select(self, l2_results: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        eligible = [self._enrich(result) for result in l2_results if self._is_eligible(result)]
-        eligible.sort(key=lambda item: item["l3_rank_score"], reverse=True)
+    def select(
+        self,
+        l2_results: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        outcomes: Dict[str, Dict[str, Any]] = {}
+        eligible = []
+        for result in l2_results:
+            reason = self._eligibility_reason(result)
+            article = result.get("article")
+            url_hash = article.url_hash if article else ""
+            if reason:
+                if url_hash:
+                    outcomes[url_hash] = self._outcome(result, reason)
+                continue
+            item = self._enrich(result)
+            eligible.append(item)
+            outcomes[url_hash] = self._outcome(result, "eligible")
 
-        if not self.enabled:
-            selected_results = [item["result"] for item in eligible]
-            return selected_results, self._metadata(eligible, eligible, len(eligible))
-
-        topics = self._cluster(eligible)
+        eligible.sort(key=lambda item: item["rank_score"], reverse=True)
+        topics = self._cluster(eligible, outcomes)
+        capacity = min(self.max_candidates, len(topics))
         source_total = len({topic["source_code"] for topic in topics})
         category_total = len({topic["category"] for topic in topics})
-        source_balance_active = source_total >= self.min_sources_for_balance
-        category_balance_active = category_total >= self.min_categories_for_balance
-        balance_active = source_balance_active or category_balance_active
-        source_limit = (
-            max(1, min(self.max_per_source, math.ceil(self.max_candidates * self.max_source_ratio)))
-            if source_balance_active else self.max_candidates
+        constraints_needed = len(topics) > self.max_candidates
+        source_balance_active = (
+            constraints_needed and source_total >= self.min_sources_for_balance
         )
-        category_limit = (
-            max(1, math.ceil(self.max_candidates * self.max_category_ratio))
-            if category_balance_active else self.max_candidates
+        category_balance_active = (
+            constraints_needed and category_total >= self.min_categories_for_balance
         )
 
-        major_topics = [topic for topic in topics if topic["must_include"]]
-        protected_major_topics = (
-            major_topics if self.max_major_exceptions == 0
-            else major_topics[: self.max_major_exceptions]
-        )
-        selection_capacity = max(self.max_candidates, len(protected_major_topics))
-
-        selected: List[Dict[str, Any]] = []
-        selected_ids = set()
-        source_counts = Counter()
-        category_counts = Counter()
-
-        def add(topic: Dict[str, Any], bypass_limits: bool = False) -> bool:
-            if topic["topic_id"] in selected_ids or len(selected) >= selection_capacity:
-                return False
-            source = topic["source_code"]
-            category = topic["category"]
-            if not bypass_limits and (
-                source_counts[source] >= source_limit
-                or category_counts[category] >= category_limit
-            ):
-                return False
-            selected.append(topic)
-            selected_ids.add(topic["topic_id"])
-            source_counts[source] += 1
-            category_counts[category] += 1
-            return True
-
-        for topic in protected_major_topics:
-            add(topic, bypass_limits=True)
-
-        self._round_robin(
-            topics,
-            selected_ids,
-            source_counts,
-            category_counts,
-            source_limit,
-            category_limit,
-            add,
-            enforce_category=True,
-            capacity=selection_capacity,
-        )
-        if len(selected) < selection_capacity:
-            self._round_robin(
+        if not self.enabled or not constraints_needed:
+            selected = topics[:capacity]
+            source_limits = {}
+            category_limit = capacity
+        else:
+            source_limits = {
+                source: self._source_limit(source)
+                for source in {topic["source_code"] for topic in topics}
+            }
+            category_limit = max(1, math.ceil(self.max_candidates * self.max_category_ratio))
+            selected = self._select_balanced(
                 topics,
-                selected_ids,
-                source_counts,
-                category_counts,
-                source_limit,
+                capacity,
+                source_limits,
                 category_limit,
-                add,
-                enforce_category=False,
-                capacity=selection_capacity,
+                source_balance_active,
+                category_balance_active,
             )
 
-        metadata = self._metadata(eligible, selected, len(topics))
-        metadata.update({
-            "source_limit": source_limit,
+        selected_ids = {topic["topic_id"] for topic in selected}
+        for topic in topics:
+            reason = "selected" if topic["topic_id"] in selected_ids else "excluded_by_balance"
+            outcomes[topic["topic_id"]] = self._outcome(topic["result"], reason)
+
+        source_counts = Counter(topic["source_code"] for topic in selected)
+        category_counts = Counter(topic["category"] for topic in selected)
+        metadata = {
+            "eligible": len(eligible),
+            "topics": len(topics),
+            "selected": len(selected),
+            "excluded": max(0, len(eligible) - len(selected)),
+            "capacity": self.max_candidates,
+            "source_limits": source_limits,
             "category_limit": category_limit,
             "source_counts": dict(source_counts),
             "category_counts": dict(category_counts),
-            "balance_active": balance_active,
             "source_balance_active": source_balance_active,
             "category_balance_active": category_balance_active,
-            "major_event_count": len(major_topics),
-            "protected_major_event_count": len(protected_major_topics),
-        })
+            "article_outcomes": list(outcomes.values()),
+            "selected_articles": [
+                {
+                    "url_hash": topic["topic_id"],
+                    "source_code": topic["source_code"],
+                    "category": topic["category"],
+                    "title": topic["title"],
+                    "rank_score": topic["rank_score"],
+                    "related_count": len(topic["member_hashes"]),
+                }
+                for topic in selected
+            ],
+        }
         logger.info(
             "L3 候选均衡完成: eligible=%d, topics=%d, selected=%d, sources=%d",
             len(eligible),
@@ -159,28 +159,32 @@ class L3CandidateSelector:
         )
         return [topic["result"] for topic in selected], metadata
 
-    def _round_robin(
+    def _select_balanced(
         self,
         topics: List[Dict[str, Any]],
-        selected_ids: Set[str],
-        source_counts: Counter,
-        category_counts: Counter,
-        source_limit: int,
-        category_limit: int,
-        add,
-        enforce_category: bool,
         capacity: int,
-    ) -> None:
-        while len(selected_ids) < capacity:
-            remaining = [topic for topic in topics if topic["topic_id"] not in selected_ids]
+        source_limits: Dict[str, int],
+        category_limit: int,
+        source_balance_active: bool,
+        category_balance_active: bool,
+    ) -> List[Dict[str, Any]]:
+        selected: List[Dict[str, Any]] = []
+        selected_ids = set()
+        source_counts = Counter()
+        category_counts = Counter()
+
+        while len(selected) < capacity:
+            remaining = [
+                topic for topic in topics if topic["topic_id"] not in selected_ids
+            ]
             if not remaining:
-                return
+                break
             sources = sorted(
                 {topic["source_code"] for topic in remaining},
                 key=lambda source: (
                     source_counts[source],
                     -max(
-                        topic["l3_rank_score"]
+                        topic["rank_score"]
                         for topic in remaining
                         if topic["source_code"] == source
                     ),
@@ -188,66 +192,49 @@ class L3CandidateSelector:
             )
             progressed = False
             for source in sources:
-                if source_counts[source] >= source_limit:
+                if (
+                    source_balance_active
+                    and source_counts[source] >= source_limits[source]
+                ):
                     continue
                 candidate = next((
                     topic for topic in remaining
                     if topic["source_code"] == source
                     and (
-                        not enforce_category
+                        not category_balance_active
                         or category_counts[topic["category"]] < category_limit
                     )
                 ), None)
-                if candidate and add(candidate, bypass_limits=not enforce_category):
-                    progressed = True
-                if len(selected_ids) >= capacity:
-                    return
+                if not candidate:
+                    continue
+                selected.append(candidate)
+                selected_ids.add(candidate["topic_id"])
+                source_counts[source] += 1
+                category_counts[candidate["category"]] += 1
+                progressed = True
+                if len(selected) >= capacity:
+                    break
             if not progressed:
-                return
+                break
+        return selected
 
-    def _is_eligible(self, result: Dict[str, Any]) -> bool:
+    def _eligibility_reason(self, result: Dict[str, Any]) -> str:
+        article = result.get("article")
         analysis = result.get("analysis", {})
-        value_score = _number(analysis.get("value_score"))
-        return (
-            result.get("article") is not None
-            and value_score >= self.min_score
-            and (
-                analysis.get("need_deep_analysis") is not False
-                or self._is_major_analysis(analysis, value_score)
-            )
-        )
-
-    @staticmethod
-    def _is_major_analysis(analysis: Dict[str, Any], value_score: float) -> bool:
-        info_type = str(analysis.get("info_type") or "其他")
-        major_release = (
-            info_type in MAJOR_EVENT_TYPES
-            and _number(analysis.get("score_trend")) >= 9.0
-            and _number(analysis.get("score_credibility")) >= 8.0
-            and value_score >= 7.0
-        )
-        engineering_breakthrough = (
-            info_type in {"技术方案", "工程实践", "模型发布", "产品发布"}
-            and _number(analysis.get("score_engineering")) >= 9.0
-            and _number(analysis.get("score_trend")) >= 8.5
-            and _number(analysis.get("score_credibility")) >= 8.0
-            and value_score >= 7.0
-        )
-        return major_release or engineering_breakthrough
+        if article is None:
+            return "article_missing"
+        if self._rank_score(analysis) < self.min_score:
+            return "score_below_threshold"
+        if analysis.get("need_deep_analysis") is False:
+            return "deep_analysis_not_needed"
+        if _number(analysis.get("score_credibility"), 0) < self.min_credibility:
+            return "credibility_gate_failed"
+        return ""
 
     def _enrich(self, result: Dict[str, Any]) -> Dict[str, Any]:
         analysis = result.get("analysis", {})
         article = result["article"]
-        value_score = _number(analysis.get("value_score"))
-        rank_score = round(
-            value_score * 0.5
-            + _number(analysis.get("score_tech_depth")) * 0.2
-            + _number(analysis.get("score_engineering")) * 0.2
-            + _number(analysis.get("score_trend")) * 0.1,
-            2,
-        )
         title = str(analysis.get("title_cn") or article.title or "")
-        must_include = self._is_major_analysis(analysis, value_score)
         terms = _title_terms(title)
         for field in ("keywords", "tech_tags", "companies"):
             terms.update(value.lower() for value in _string_values(analysis.get(field)))
@@ -257,28 +244,47 @@ class L3CandidateSelector:
             "title": title,
             "source_code": article.source_code or "unknown",
             "category": str(analysis.get("category") or "其他AI相关"),
-            "value_score": value_score,
-            "l3_rank_score": rank_score,
-            "must_include": must_include,
+            "rank_score": self._rank_score(analysis),
             "terms": terms,
-            "related_count": 1,
+            "member_hashes": [article.url_hash],
         }
 
-    def _cluster(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _cluster(
+        self,
+        items: List[Dict[str, Any]],
+        outcomes: Dict[str, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
         topics: List[Dict[str, Any]] = []
         for item in items:
             matched = next((
                 topic for topic in topics
                 if topic["category"] == item["category"]
-                and self._similarity(topic["terms"], item["terms"]) >= self.similarity_threshold
+                and self._similarity(topic["terms"], item["terms"])
+                >= self.similarity_threshold
             ), None)
             if matched:
                 matched["terms"].update(item["terms"])
-                matched["must_include"] = matched["must_include"] or item["must_include"]
-                matched["related_count"] += 1
+                matched["member_hashes"].append(item["topic_id"])
+                outcomes[item["topic_id"]] = self._outcome(
+                    item["result"],
+                    "merged_topic",
+                )
             else:
                 topics.append(dict(item))
         return topics
+
+    def _source_limit(self, source_code: str) -> int:
+        profile = self.source_profiles.get(source_code, {})
+        role = str(profile.get("selection_role") or "engineering")
+        ratio = self.source_role_ratios.get(role, self.source_role_ratios["engineering"])
+        return max(1, math.ceil(self.max_candidates * ratio))
+
+    @staticmethod
+    def _rank_score(analysis: Dict[str, Any]) -> float:
+        rank_score = analysis.get("rank_score")
+        if rank_score is None:
+            rank_score = analysis.get("value_score")
+        return _number(rank_score)
 
     @staticmethod
     def _similarity(left: Set[str], right: Set[str]) -> float:
@@ -286,27 +292,14 @@ class L3CandidateSelector:
             return 0.0
         return len(left & right) / len(left | right)
 
-    @staticmethod
-    def _metadata(
-        eligible: List[Dict[str, Any]],
-        selected: List[Dict[str, Any]],
-        topic_count: int,
-    ) -> Dict[str, Any]:
+    @classmethod
+    def _outcome(cls, result: Dict[str, Any], reason: str) -> Dict[str, Any]:
+        article = result.get("article")
+        analysis = result.get("analysis", {})
         return {
-            "eligible": len(eligible),
-            "topics": topic_count,
-            "selected": len(selected),
-            "excluded": max(0, len(eligible) - len(selected)),
-            "selected_articles": [
-                {
-                    "url_hash": item["result"]["article"].url_hash,
-                    "source_code": item["source_code"],
-                    "category": item["category"],
-                    "title": item["title"],
-                    "value_score": item["value_score"],
-                    "major_event": item["must_include"],
-                    "related_count": item["related_count"],
-                }
-                for item in selected
-            ],
+            "url_hash": article.url_hash if article else "",
+            "source_code": article.source_code if article else "",
+            "category": analysis.get("category") or "其他AI相关",
+            "rank_score": cls._rank_score(analysis),
+            "reason": reason,
         }

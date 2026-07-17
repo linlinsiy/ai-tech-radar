@@ -27,7 +27,7 @@ ARTICLE_SUMMARY_TEMPLATE = """# {display_title}
 **资讯子分类**：{sub_category}
 **资讯类型**：{info_type}
 **原文语言**：{source_language}
-**价值评分**：{value_score}/10
+**统一排序分**：{rank_score}/10
 
 ## 中文摘要（辅助入口）
 {summary_cn}
@@ -54,7 +54,7 @@ DEEP_INSIGHT_TEMPLATE = """# {title} — 深度洞察
 **来源**：{source_name}
 **原文链接**：{url}
 **资讯分类**：{category}
-**价值评分**：{value_score}/10
+**统一排序分**：{rank_score}/10
 
 ## 技术背景
 {technical_background}
@@ -169,6 +169,7 @@ def generate_article_summary(
     author: Optional[str] = None,
     publish_time=None,
     value_score: Optional[float] = None,
+    rank_score: Optional[float] = None,
 ) -> str:
     """
     生成文章摘要卡片 Markdown
@@ -188,7 +189,8 @@ def generate_article_summary(
         category: 资讯分类
         author: 作者
         publish_time: 发布时间
-        value_score: 价值评分
+        value_score: 旧字段兼容评分
+        rank_score: 统一排序评分
     出参：Markdown 格式文本
     """
     return ARTICLE_SUMMARY_TEMPLATE.format(
@@ -203,7 +205,11 @@ def generate_article_summary(
         sub_category=sub_category or "N/A",
         info_type=info_type or "N/A",
         source_language=source_language or "unknown",
-        value_score=f"{value_score:.1f}" if value_score is not None else "N/A",
+        rank_score=(
+            f"{rank_score:.1f}" if rank_score is not None
+            else f"{value_score:.1f}" if value_score is not None
+            else "N/A"
+        ),
         summary_cn=summary_cn,
         briefing_focus=briefing_focus or "N/A",
         analysis_detail=_format_analysis_detail(analysis_detail),
@@ -224,6 +230,7 @@ def generate_deep_insight(
     technical_solution: str,
     impact_analysis: str = "",
     reference_value: str = "",
+    rank_score: Optional[float] = None,
 ) -> str:
     """
     生成深度洞察卡片 Markdown
@@ -236,7 +243,11 @@ def generate_deep_insight(
         source_name=source_name,
         url=url,
         category=category or "N/A",
-        value_score=f"{value_score:.1f}" if value_score is not None else "N/A",
+        rank_score=(
+            f"{rank_score:.1f}" if rank_score is not None
+            else f"{value_score:.1f}" if value_score is not None
+            else "N/A"
+        ),
         technical_background=technical_background,
         core_problem=core_problem,
         technical_solution=technical_solution,

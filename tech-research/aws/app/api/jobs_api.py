@@ -7,10 +7,12 @@
 接口：
     POST /api/v1/jobs/collect      手动触发采集分析
     POST /api/v1/jobs/health-check  手动触发健康检查
+    POST /api/v1/validation/collect  独立采集验证并保存本地批次
+    POST /api/v1/validation/analyze  分析指定的本地采集批次
 """
 import logging
 import json
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -52,6 +54,25 @@ class CollectJobRequest(BaseModel):
     task_type: str = Field(
         default="manual_backfill",
         description="任务类型: scheduled | manual_backfill"
+    )
+
+
+class ValidationCollectRequest(CollectJobRequest):
+    """独立采集验证请求；除 strategy 外与正式采集接口参数一致。"""
+
+    strategy: Literal["server_recommended", "primary_resilient"] = Field(
+        default="primary_resilient",
+        description="不可达来源采集策略",
+    )
+
+
+class ValidationAnalyzeRequest(BaseModel):
+    """对一个本地采集验证批次执行 L2/L3。"""
+
+    collection_batch_no: str = Field(
+        description="采集验证接口返回的批次号",
+        min_length=1,
+        max_length=128,
     )
 
 
@@ -116,3 +137,29 @@ async def trigger_health_check():
     except Exception as e:
         logger.exception("健康检查执行异常")
         return {"success": False, "error": str(e)}
+
+
+async def trigger_validation_collect(request: ValidationCollectRequest):
+    """只执行采集并将原始结果保存到 data/validation/collections。"""
+    params_str = json.dumps(request.model_dump(), ensure_ascii=False)
+    logger.info("手动触发独立采集验证: %s", params_str)
+    try:
+        from jobs.validation_job import handle_validation_collect
+        result = await run_in_threadpool(handle_validation_collect, params_str)
+        return {"success": True, "data": result}
+    except Exception as exc:
+        logger.exception("独立采集验证执行异常")
+        return {"success": False, "error": str(exc)}
+
+
+async def trigger_validation_analysis(request: ValidationAnalyzeRequest):
+    """读取一个本地采集批次，只执行 L2/L3 并保存分析结果。"""
+    params_str = json.dumps(request.model_dump(), ensure_ascii=False)
+    logger.info("手动触发采集批次分析: %s", params_str)
+    try:
+        from jobs.validation_job import handle_validation_analysis
+        result = await run_in_threadpool(handle_validation_analysis, params_str)
+        return {"success": True, "data": result}
+    except Exception as exc:
+        logger.exception("采集批次分析执行异常")
+        return {"success": False, "error": str(exc)}

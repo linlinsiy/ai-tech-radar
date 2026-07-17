@@ -183,18 +183,18 @@ class InternalConfig:
 
     @property
     def briefing_selection_config(self) -> Dict:
-        """L4 选题数量、来源均衡和内容类型软配额。"""
+        """L4 选题数量、统一评分门槛及软配额。"""
         return {
             "target_weekly": self._config.getint("DEFAULT", "briefing.selection.target_weekly", fallback=8),
             "target_monthly": self._config.getint("DEFAULT", "briefing.selection.target_monthly", fallback=14),
             "target_quarterly": self._config.getint("DEFAULT", "briefing.selection.target_quarterly", fallback=18),
             "target_topic": self._config.getint("DEFAULT", "briefing.selection.target_topic", fallback=12),
-            "min_value_score": self._config.getfloat("DEFAULT", "briefing.selection.min_value_score", fallback=5.5),
-            "max_primary_topics_per_source": self._config.getint("DEFAULT", "briefing.selection.max_primary_topics_per_source", fallback=2),
-            "max_primary_source_ratio": self._config.getfloat("DEFAULT", "briefing.selection.max_primary_source_ratio", fallback=0.2),
+            "min_rank_score": self._config.getfloat("DEFAULT", "briefing.selection.min_rank_score", fallback=6.5),
+            "min_credibility_score": self._config.getfloat("DEFAULT", "briefing.selection.min_credibility_score", fallback=6.5),
+            "max_primary_source_ratio": self._config.getfloat("DEFAULT", "briefing.selection.max_primary_source_ratio", fallback=0.15),
             "max_category_ratio": self._config.getfloat("DEFAULT", "briefing.selection.max_category_ratio", fallback=0.35),
-            "engineering_ratio": self._config.getfloat("DEFAULT", "briefing.selection.engineering_ratio", fallback=0.55),
-            "research_ratio": self._config.getfloat("DEFAULT", "briefing.selection.research_ratio", fallback=0.25),
+            "min_sources_for_balance": self._config.getint("DEFAULT", "briefing.selection.min_sources_for_balance", fallback=3),
+            "min_categories_for_balance": self._config.getint("DEFAULT", "briefing.selection.min_categories_for_balance", fallback=2),
             "topic_similarity_threshold": self._config.getfloat("DEFAULT", "briefing.selection.topic_similarity_threshold", fallback=0.34),
             "max_articles_per_topic": self._config.getint("DEFAULT", "briefing.selection.max_articles_per_topic", fallback=3),
         }
@@ -211,7 +211,8 @@ class InternalConfig:
             "version": parser.get(section, "version", fallback="unknown"),
             "categories": parser.get(section, "categories", fallback=""),
             "system": parser.get(section, "system", fallback=""),
-            "prompt": parser.get(section, "prompt", fallback=""),
+            "intro_prompt": parser.get(section, "intro_prompt", fallback=""),
+            "section_prompt": parser.get(section, "section_prompt", fallback=""),
         }
 
     @property

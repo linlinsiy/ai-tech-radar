@@ -2,6 +2,7 @@ import os
 import sys
 import asyncio
 import threading
+import tempfile
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
@@ -14,15 +15,98 @@ from crawler.discovery_crawler import SearchDiscoveryCrawler
 from crawler.browser_fetcher import BrowserFetcher
 from crawler.base import RawArticle
 from crawler.site_discovery_crawler import SiteDiscoveryCrawler
+from crawler.source_strategies import (
+    CONFIGURED,
+    PRIMARY_RESILIENT,
+    SERVER_RECOMMENDED,
+    build_source_plans,
+    match_server_coverage_aliases,
+)
 from crawler.web_crawler import WebCrawler
 from deep.candidate_selector import L3CandidateSelector
-from api.jobs_api import CollectJobRequest, trigger_collect
+from deep.insight import L3Analyzer
+from api.jobs_api import (
+    CollectJobRequest,
+    ValidationAnalyzeRequest,
+    ValidationCollectRequest,
+    trigger_collect,
+    trigger_validation_analysis,
+    trigger_validation_collect,
+)
 from config import AWSConfig
+from jobs.collect_job import CollectOrchestrator
+from jobs.validation_job import (
+    ValidationAnalysisService,
+    ValidationCollectionService,
+    ValidationStore,
+)
 from processor.candidate_pool import CandidatePoolPlanner
 from processor.l2_analysis import L2Analyzer
+from processor.title_router import TitleRouter
+
+
+class FakePrompts:
+    def get(self, name):
+        return {"categories": "大模型基础技术,Agent与智能体,行业动态"}
+
+    def render(self, name, **kwargs):
+        return "system", "user", "test-v1", ""
+
+
+class FakeLLM:
+    def __init__(self, parsed):
+        self.parsed = parsed
+
+    def call(self, **kwargs):
+        return {"success": True, "model": "fake-model"}
+
+    def parse_json_response(self, result):
+        return self.parsed
 
 
 class CollectionRuleTests(unittest.TestCase):
+    @staticmethod
+    def _empty_stage_stats():
+        return {
+            "L0_discovery": {
+                "triggered": False,
+                "site_total": 0,
+                "search_total": 0,
+                "total": 0,
+            },
+            "L1_candidate_pool": {
+                "total": 0,
+                "new": 0,
+                "skipped": 0,
+                "initial_selected": 0,
+                "deferred": 0,
+                "refill_selected": 0,
+                "source_counts": {},
+            },
+            "L1_dedup": {
+                "total": 0,
+                "new": 0,
+                "skipped": 0,
+                "content_duplicates": 0,
+            },
+            "L2_analysis": {
+                "total": 0,
+                "success": 0,
+                "failed": 0,
+                "discarded": 0,
+                "content_insufficient": 0,
+                "initial": {},
+                "refill": {},
+            },
+            "L3_selection": {
+                "eligible": 0,
+                "topics": 0,
+                "selected": 0,
+                "excluded": 0,
+            },
+            "L3_insight": {"triggered": 0, "success": 0},
+        }
+
     @staticmethod
     def _l2_result(
         source: str,
@@ -50,8 +134,11 @@ class CollectionRuleTests(unittest.TestCase):
                 "companies": [],
                 "score_tech_depth": score,
                 "score_engineering": score,
+                "score_org_relevance": score,
                 "score_trend": trend,
                 "score_credibility": credibility,
+                "score_timeliness": 8.0,
+                "rank_score": score,
                 "value_score": score,
                 "need_deep_analysis": True,
             },
@@ -77,6 +164,91 @@ class CollectionRuleTests(unittest.TestCase):
             L2Analyzer._source_credibility_score({"type": "tech_media", "credibility_score": "8.3"}),
             8.3,
         )
+
+    def test_source_selection_roles_do_not_turn_financial_media_into_engineering_source(self):
+        self.assertEqual(AWSConfig._default_selection_role("academic"), "research")
+        self.assertEqual(AWSConfig._default_selection_role("industry_application"), "industry")
+        self.assertEqual(AWSConfig._default_selection_role("tech_community"), "engineering")
+
+    def test_validation_source_profile_keeps_semantic_routing_keywords(self):
+        profile = ValidationCollectionService._safe_source_profile({
+            "code": "mixed-source",
+            "include_keywords": "AI,Agent",
+            "exclude_keywords": "招聘",
+            "api_key": "must-not-be-persisted",
+        })
+
+        self.assertEqual(profile["include_keywords"], "AI,Agent")
+        self.assertEqual(profile["exclude_keywords"], "招聘")
+        self.assertNotIn("api_key", profile)
+
+    def test_l2_rank_score_uses_single_formula_and_excludes_credibility(self):
+        parsed = {
+            "title_cn": "统一评分测试",
+            "summary_cn": "摘要",
+            "category": "Agent与智能体",
+            "sub_category": "Agent工程化落地",
+            "info_type": "工程实践",
+            "briefing_focus": "工程能力变化",
+            "analysis_detail": {},
+            "tech_depth": 2,
+            "engineering": 8,
+            "org_relevance": 10,
+            "trend": 9,
+            "credibility": 1,
+            "timeliness": 1,
+        }
+        analyzer = L2Analyzer(
+            FakeLLM(parsed),
+            FakePrompts(),
+            source_profiles={"official": {"type": "vendor_blog"}},
+            deep_analysis_min_score=6.5,
+        )
+        article = RawArticle(
+            source_code="official",
+            title="统一评分测试",
+            url="https://official.example/test",
+            raw_summary="正文摘要",
+            publish_time=datetime(2026, 7, 15),
+            crawl_time=datetime(2026, 7, 15),
+        )
+
+        result = analyzer._analyze_single(article)
+
+        self.assertEqual(result["analysis"]["rank_score"], 8.3)
+        self.assertEqual(result["analysis"]["value_score"], 8.3)
+        self.assertEqual(result["analysis"]["score_credibility"], 8.5)
+
+    def test_title_router_keeps_low_confidence_and_has_no_importance_identity(self):
+        llm = FakeLLM({
+            "items": [{
+                "index": 0,
+                "ai_related": False,
+                "predicted_category": "行业动态",
+                "info_type_hint": "模型发布",
+                "confidence": 0.4,
+                "reason": "标题信息不足",
+            }]
+        })
+        router = TitleRouter(
+            llm,
+            FakePrompts(),
+            {"enabled": True, "min_confidence": 0.65},
+            "fake-model",
+            ["大模型基础技术", "Agent与智能体", "行业动态"],
+        )
+        article = RawArticle(
+            source_code="mixed",
+            title="GPT 新版本发布",
+            url="https://mixed.example/release",
+        )
+
+        stats = router.route([article], {"mixed": {"semantic_routing": True}})
+
+        self.assertIsNone(article.ai_related)
+        self.assertEqual(article.route_method, "semantic")
+        self.assertEqual(stats["low_confidence"], 1)
+        self.assertFalse(hasattr(article, "possible_major_event"))
 
     def test_browser_fallback_detects_js_shell(self):
         crawler = WebCrawler({
@@ -116,6 +288,45 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertIsNone(candidates[0].raw_html)
         detail_fetch.assert_not_called()
 
+    def test_web_list_selector_can_target_anchor_directly(self):
+        crawler = WebCrawler({
+            "code": "test",
+            "name": "test",
+            "access_url": "https://example.com/ai",
+            "domain": "example.com",
+            "list_selector": "a[href*='/p/']",
+            "article_url_pattern": r"/p/\d+",
+        })
+        parsed = crawler._parse_list_page(
+            '<html><body><a href="/p/123456">重大模型正式发布</a></body></html>',
+            crawler.access_url,
+        )
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["url"], "https://example.com/p/123456")
+
+    def test_server_xpath_parser_is_strict_and_extracts_candidates(self):
+        crawler = WebCrawler({
+            "code": "test",
+            "name": "test",
+            "access_url": "https://example.com/ai",
+            "domain": "example.com",
+            "list_link_xpath": "//div[@class='article-item']/a/@href",
+            "list_title_xpath": "//div[@class='article-item']/a/text()",
+            "xpath_strict": "true",
+        })
+        parsed = crawler._parse_list_page(
+            '<div class="article-item"><a href="/article/1">AI工程平台升级</a></div>',
+            crawler.access_url,
+        )
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0]["title"], "AI工程平台升级")
+
+        no_match = crawler._parse_list_page(
+            '<a href="/article/2">普通兜底链接不会被严格模式采用</a>',
+            crawler.access_url,
+        )
+        self.assertEqual(no_match, [])
+
     def test_http_collect_runs_sync_job_outside_event_loop_thread(self):
         event_loop_thread = threading.get_ident()
 
@@ -126,6 +337,253 @@ class CollectionRuleTests(unittest.TestCase):
             response = asyncio.run(trigger_collect(CollectJobRequest()))
 
         self.assertNotEqual(response["data"]["worker_thread"], event_loop_thread)
+
+    def test_validation_endpoints_run_sync_jobs_outside_event_loop_thread(self):
+        event_loop_thread = threading.get_ident()
+
+        def fake_job(_params):
+            return {"worker_thread": threading.get_ident()}
+
+        with patch("jobs.validation_job.handle_validation_collect", side_effect=fake_job):
+            collect_response = asyncio.run(
+                trigger_validation_collect(ValidationCollectRequest())
+            )
+        with patch("jobs.validation_job.handle_validation_analysis", side_effect=fake_job):
+            analysis_response = asyncio.run(trigger_validation_analysis(
+                ValidationAnalyzeRequest(collection_batch_no="VAL-COL-test")
+            ))
+
+        self.assertNotEqual(collect_response["data"]["worker_thread"], event_loop_thread)
+        self.assertNotEqual(analysis_response["data"]["worker_thread"], event_loop_thread)
+
+    def test_validation_source_strategies_keep_their_distinct_behavior(self):
+        config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
+        sources = AWSConfig(config_dir).get_data_sources()
+
+        server = build_source_plans(
+            sources,
+            SERVER_RECOMMENDED,
+            requested_codes=["36kr-ai", "csdn-ai"],
+        )
+        server_by_code = {item["source_code"]: item for item in server}
+        self.assertEqual(set(server_by_code), {"36kr-ai", "csdn-ai"})
+        self.assertEqual(
+            server_by_code["36kr-ai"]["variants"][0]["xpath_strict"],
+            "true",
+        )
+
+        resilient = build_source_plans(
+            sources,
+            PRIMARY_RESILIENT,
+            requested_codes=["deepmind-blog", "oschina-ai"],
+        )
+        resilient_by_code = {item["source_code"]: item for item in resilient}
+        self.assertEqual(
+            resilient_by_code["deepmind-blog"]["variants"][0]["fetch_method"],
+            "rss",
+        )
+        self.assertEqual(
+            resilient_by_code["oschina-ai"]["variants"][0]["access_url"],
+            "https://www.oschina.net/news/rss/ai",
+        )
+
+        self.assertEqual(
+            match_server_coverage_aliases(
+                "36kr-ai", "Karpathy谈大模型训练与Scaling Law"
+            ),
+            ["karpathy"],
+        )
+        self.assertEqual(
+            match_server_coverage_aliases(
+                "openai-blog", "Karpathy谈大模型训练与Scaling Law"
+            ),
+            [],
+        )
+
+        configured = build_source_plans(
+            [{
+                "code": "configured-source",
+                "name": "Configured Source",
+                "fetch_method": "rss",
+            }],
+            CONFIGURED,
+        )
+        self.assertNotIn("timeout_seconds", configured[0]["variants"][0])
+
+    def test_validation_store_round_trip_and_rejects_unsafe_batch_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ValidationStore(temp_dir)
+            payload = {"batch_no": "VAL-COL-test", "articles": []}
+            path = store.save_collection("VAL-COL-test", payload)
+            self.assertTrue(os.path.isfile(path))
+            self.assertEqual(store.load_collection("VAL-COL-test"), payload)
+            with self.assertRaises(ValueError):
+                store.load_collection("../outside")
+
+    def test_validation_collection_delegates_to_shared_collection_stage(self):
+        config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
+        service = ValidationCollectionService(AWSConfig(config_dir))
+        article = RawArticle(
+            source_code="source-a",
+            title="AI工程平台升级",
+            url="https://example.com/article/1",
+            raw_html="<article>" + ("正文" * 100) + "</article>",
+        )
+        shared_result = {
+            "strategy": PRIMARY_RESILIENT,
+            "articles": [article],
+            "crawlers": {},
+            "source_profiles": {},
+            "source_results": [{
+                "source_code": "source-a",
+                "source_name": "Source A",
+                "category": "AI基础设施",
+                "status": "success",
+                "article_count": 1,
+                "selected_variant": "official-rss",
+                "source_profile": {
+                    "code": "source-a",
+                    "name": "Source A",
+                    "fetch_method": "rss",
+                },
+                "attempts": [],
+            }],
+            "data_sources": [],
+            "source_count": 1,
+            "error_count": 0,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service.store = ValidationStore(temp_dir)
+            with patch.object(
+                service.orchestrator,
+                "collect_stage",
+                return_value=shared_result,
+            ) as collect_stage:
+                result = service.run(
+                    strategy=PRIMARY_RESILIENT,
+                    sources=["source-a"],
+                )
+
+        self.assertEqual(result["article_count"], 1)
+        collect_stage.assert_called_once_with(
+            strategy=PRIMARY_RESILIENT,
+            sources=["source-a"],
+            from_date=None,
+            to_date=None,
+            hydrate_candidates=True,
+            strict_sources=True,
+        )
+
+    def test_collection_only_orchestrator_does_not_initialize_llm(self):
+        config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
+        with patch("jobs.collect_job.LLMClient") as llm_client:
+            orchestrator = CollectOrchestrator(
+                AWSConfig(config_dir),
+                initialize_analysis=False,
+            )
+
+        self.assertTrue(orchestrator.source_profiles)
+        llm_client.assert_not_called()
+
+    def test_validation_analysis_delegates_to_shared_analysis_stage(self):
+        config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
+        service = ValidationAnalysisService(AWSConfig(config_dir))
+        article = RawArticle(
+            source_code="source-a",
+            title="AI工程平台升级",
+            url="https://example.com/article/1",
+            raw_html="<article>" + ("正文" * 100) + "</article>",
+        )
+        analysis_result = {
+            "article": article,
+            "analysis": {
+                "category": "AI基础设施",
+                "value_score": 8.0,
+            },
+        }
+        shared_result = {
+            "l2_results": [analysis_result],
+            "discarded_l2_results": [],
+            "l3_candidates": [analysis_result],
+            "l3_results": [],
+            "remaining_deferred": [],
+            "stats": self._empty_stage_stats(),
+        }
+        manifest = {
+            "strategy": PRIMARY_RESILIENT,
+            "source_results": [],
+            "articles": [{
+                "source_code": article.source_code,
+                "title": article.title,
+                "url": article.url,
+                "crawl_time": article.crawl_time.isoformat(),
+                "raw_html": article.raw_html,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service.store = ValidationStore(temp_dir)
+            service.store.save_collection("VAL-COL-test", manifest)
+            with patch.object(
+                service.orchestrator,
+                "analyze_stage",
+                return_value=shared_result,
+            ) as analyze_stage:
+                result = service.run("VAL-COL-test")
+
+        self.assertEqual(result["l2_success"], 1)
+        _, kwargs = analyze_stage.call_args
+        self.assertFalse(kwargs["use_history_cache"])
+        self.assertFalse(kwargs["persist_processed"])
+        self.assertFalse(kwargs["enable_discovery"])
+        self.assertFalse(kwargs["allow_l3_content_fetch"])
+
+    def test_production_run_uses_shared_collection_and_analysis_stages(self):
+        config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
+        orchestrator = CollectOrchestrator(AWSConfig(config_dir))
+        collection_result = {
+            "strategy": "configured",
+            "articles": [],
+            "crawlers": {},
+            "source_profiles": {},
+            "source_results": [],
+            "data_sources": [],
+            "source_count": 0,
+            "error_count": 0,
+        }
+        analysis_result = {
+            "l2_results": [],
+            "discarded_l2_results": [],
+            "l3_candidates": [],
+            "l3_results": [],
+            "remaining_deferred": [],
+            "stats": self._empty_stage_stats(),
+        }
+        with patch.object(
+            orchestrator,
+            "collect_stage",
+            return_value=collection_result,
+        ) as collect_stage, patch.object(
+            orchestrator,
+            "analyze_stage",
+            return_value=analysis_result,
+        ) as analyze_stage, patch.object(
+            orchestrator.importer,
+            "build_payload",
+            return_value={},
+        ), patch.object(
+            orchestrator.importer,
+            "import_batch",
+            return_value={"success": True},
+        ), patch("jobs.collect_job.CollectionAudit"):
+            result = orchestrator.run(task_type="manual_backfill")
+
+        self.assertEqual(result["import"]["status"], "success")
+        self.assertEqual(collect_stage.call_args.kwargs["strategy"], "configured")
+        _, kwargs = analyze_stage.call_args
+        self.assertTrue(kwargs["use_history_cache"])
+        self.assertTrue(kwargs["persist_processed"])
+        self.assertTrue(kwargs["enable_discovery"])
+        self.assertTrue(kwargs["allow_l3_content_fetch"])
 
     def test_candidate_pool_keeps_fifty_per_source_for_initial_scoring(self):
         planner = CandidatePoolPlanner({
@@ -149,17 +607,16 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(len(deferred), 10)
         self.assertEqual(metadata["source_counts"]["source-a"]["candidates"], 60)
 
-    def test_candidate_refill_includes_gaps_and_all_possible_major_events(self):
+    def test_candidate_refill_only_uses_category_gap_without_identity_exception(self):
         planner = CandidatePoolPlanner({
             "initial_scored_per_source": 1,
             "refill_max_per_category": 1,
         })
-        major = RawArticle(
+        release = RawArticle(
             source_code="source-a",
             title="重点模型正式发布",
             url="https://source-a.example.com/major",
             predicted_category="大模型基础技术",
-            possible_major_event=True,
         )
         agent = RawArticle(
             source_code="source-b",
@@ -175,21 +632,21 @@ class CollectionRuleTests(unittest.TestCase):
         )
 
         selected, remaining = planner.select_refill(
-            [major, agent, other], ["Agent与智能体"]
+            [release, agent, other], ["Agent与智能体"]
         )
 
-        self.assertEqual({item.url for item in selected}, {major.url, agent.url})
-        self.assertEqual([item.url for item in remaining], [other.url])
+        self.assertEqual([item.url for item in selected], [agent.url])
+        self.assertEqual({item.url for item in remaining}, {release.url, other.url})
 
     def test_l3_candidates_are_round_robin_balanced_by_source(self):
         selector = L3CandidateSelector({
             "enabled": True,
             "max_candidates_per_batch": 6,
-            "max_candidates_per_source": 2,
-            "max_source_ratio": 1.0,
             "max_category_ratio": 1.0,
             "topic_similarity_threshold": 0.95,
-            "max_major_event_exceptions": 0,
+            "engineering_source_ratio": 0.333,
+            "industry_source_ratio": 0.333,
+            "research_source_ratio": 0.333,
         }, min_score=8.0)
         results = (
             [self._l2_result("source-a", index, score=9.0 - index * 0.1) for index in range(5)]
@@ -206,15 +663,25 @@ class CollectionRuleTests(unittest.TestCase):
             "source-c": 2,
         })
 
+    def test_validation_l3_does_not_refetch_missing_content(self):
+        analyzer = L3Analyzer(
+            llm=object(),
+            prompts=object(),
+            min_score=7.0,
+            require_full_content=True,
+            allow_content_fetch=False,
+        )
+        result = self._l2_result("source-a", 1, score=8.0)
+        with patch("processor.parser.ContentParser.fetch_full_content") as fetch:
+            self.assertFalse(analyzer.should_trigger(result))
+        fetch.assert_not_called()
+
     def test_l3_candidates_collapse_same_topic_across_sources(self):
         selector = L3CandidateSelector({
             "enabled": True,
             "max_candidates_per_batch": 4,
-            "max_candidates_per_source": 2,
-            "max_source_ratio": 1.0,
             "max_category_ratio": 1.0,
             "topic_similarity_threshold": 0.8,
-            "max_major_event_exceptions": 0,
         }, min_score=8.0)
         results = [
             self._l2_result("source-a", 1, title="GPT 新版本正式发布"),
@@ -227,15 +694,14 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(metadata["topics"], 1)
         self.assertEqual(metadata["selected_articles"][0]["related_count"], 2)
 
-    def test_l3_major_events_can_use_limited_exceptions(self):
+    def test_l3_high_score_release_cannot_bypass_source_balance(self):
         selector = L3CandidateSelector({
             "enabled": True,
             "max_candidates_per_batch": 3,
-            "max_candidates_per_source": 1,
-            "max_source_ratio": 1.0,
             "max_category_ratio": 1.0,
             "topic_similarity_threshold": 0.95,
-            "max_major_event_exceptions": 2,
+            "engineering_source_ratio": 0.10,
+            "min_sources_for_balance": 2,
         }, min_score=8.0)
         results = [
             self._l2_result(
@@ -246,24 +712,25 @@ class CollectionRuleTests(unittest.TestCase):
                 "official", 2, title="模型 Beta 发布", info_type="模型发布",
                 score=9.1, trend=9.3, credibility=9.0,
             ),
+            self._l2_result(
+                "official", 3, title="模型 Gamma 发布", info_type="模型发布",
+                score=9.0, trend=9.2, credibility=9.0,
+            ),
             self._l2_result("independent", 1, score=8.5),
         ]
 
         selected, metadata = selector.select(results)
 
-        self.assertEqual(len(selected), 3)
-        self.assertEqual(metadata["source_counts"]["official"], 2)
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(metadata["source_counts"]["official"], 1)
         self.assertEqual(metadata["source_counts"]["independent"], 1)
 
-    def test_l3_unlimited_major_events_expand_normal_batch_capacity(self):
+    def test_l3_high_score_releases_do_not_expand_batch_capacity(self):
         selector = L3CandidateSelector({
             "enabled": True,
             "max_candidates_per_batch": 1,
-            "max_candidates_per_source": 1,
-            "max_source_ratio": 1.0,
             "max_category_ratio": 1.0,
             "topic_similarity_threshold": 0.95,
-            "max_major_event_exceptions": 0,
         }, min_score=7.0)
         results = [
             self._l2_result(
@@ -278,8 +745,8 @@ class CollectionRuleTests(unittest.TestCase):
 
         selected, metadata = selector.select(results)
 
-        self.assertEqual(len(selected), 2)
-        self.assertEqual(metadata["protected_major_event_count"], 2)
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(metadata["capacity"], 1)
 
     def test_search_result_shapes_are_normalized(self):
         parsed = SearchDiscoveryCrawler._parse_results({

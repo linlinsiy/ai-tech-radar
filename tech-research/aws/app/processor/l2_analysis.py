@@ -176,10 +176,16 @@ class L2Analyzer:
         # 来源可信度和时效性由可核验元数据确定，不接受模型猜测值。
         scores["credibility"] = source_credibility
         scores["timeliness"] = timeliness
-        value_score = sum(scores.values()) / len(scores) if scores else 0.0
+        rank_score = (
+            scores.get("engineering", 5.0) * 0.30
+            + scores.get("org_relevance", 5.0) * 0.25
+            + scores.get("trend", 5.0) * 0.30
+            + scores.get("timeliness", 5.0) * 0.05
+            + scores.get("tech_depth", 5.0) * 0.10
+        )
         need_deep_analysis = parsed.get("need_deep_analysis")
         if need_deep_analysis is None:
-            need_deep_analysis = value_score >= self.deep_analysis_min_score
+            need_deep_analysis = rank_score >= self.deep_analysis_min_score
 
         analysis = {
             "title_cn": str(parsed.get("title_cn") or article.title or "").strip(),
@@ -196,10 +202,13 @@ class L2Analyzer:
             "standard_terms": standard_terms,
             "score_tech_depth": scores.get("tech_depth", 5.0),
             "score_engineering": scores.get("engineering", 5.0),
+            "score_org_relevance": scores.get("org_relevance", 5.0),
             "score_trend": scores.get("trend", 5.0),
             "score_credibility": scores.get("credibility", 5.0),
             "score_timeliness": scores.get("timeliness", 5.0),
-            "value_score": round(value_score, 2),
+            "rank_score": round(rank_score, 2),
+            # 兼容旧导入字段；新批次不再计算独立 value_score。
+            "value_score": round(rank_score, 2),
             "need_deep_analysis": self._ensure_bool(need_deep_analysis),
             "model_name": result.get("model", ""),
             "prompt_version": version,
@@ -379,6 +388,9 @@ class L2Analyzer:
         score_keys = {
             "tech_depth": ["tech_depth", "score_tech_depth", "技术深度"],
             "engineering": ["engineering", "score_engineering", "工程参考价值"],
+            "org_relevance": [
+                "org_relevance", "score_org_relevance", "组织相关性"
+            ],
             "trend": ["trend", "score_trend", "趋势重要性"],
             "credibility": ["credibility", "score_credibility", "来源可信度"],
             "timeliness": ["timeliness", "score_timeliness", "时效性"],

@@ -1,7 +1,7 @@
 """
 L3 深度洞察编排
 
-对高价值文章（默认 value_score >= 7 且有 full_content）执行深度分析。
+对达到统一 rank_score 门槛且有 full_content 的文章执行深度分析。
 需要先获取文章全文，再调用高质量模型生成五维度洞察。
 并发 ≤ 1，确保高质量模型调用不冲突。
 """
@@ -16,6 +16,16 @@ from crawler.browser_fetcher import BrowserFetcher
 
 from logging_config import get_logger
 logger = get_logger("deep.insight")
+
+
+def _rank_score(analysis: Dict[str, Any]) -> float:
+    value = analysis.get("rank_score")
+    if value is None:
+        value = analysis.get("value_score")
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 class L3Analyzer:
@@ -39,6 +49,7 @@ class L3Analyzer:
         model_name: str = "gpt-4o", browser_fallback: bool = False,
         browser_timeout_seconds: int = 45,
         browser_executable_path: str = "",
+        allow_content_fetch: bool = True,
     ):
         """
         初始化 L3 分析器
@@ -55,6 +66,7 @@ class L3Analyzer:
         self.require_full_content = require_full_content
         self.model_name = model_name
         self.browser_fallback = browser_fallback
+        self.allow_content_fetch = allow_content_fetch
         self.browser_fetcher = BrowserFetcher(
             browser_timeout_seconds,
             executable_path=browser_executable_path,
@@ -66,7 +78,7 @@ class L3Analyzer:
         """
         判断是否触发 L3 深度洞察
 
-        条件：value_score >= min_score 且（非 require_full_content 或有 full_content）
+        条件：rank_score >= min_score、L2建议深度分析且正文满足要求
 
         入参：
             l2_result: L2 分析结果 {"article": RawArticle, "analysis": {...}}
@@ -75,9 +87,9 @@ class L3Analyzer:
         analysis = l2_result.get("analysis", {})
         article = l2_result.get("article")
 
-        score = analysis.get("value_score", 0)
+        score = _rank_score(analysis)
         if score < self.min_score:
-            logger.info("L3 不触发: value_score=%.1f < %.1f", score, self.min_score)
+            logger.info("L3 不触发: rank_score=%.1f < %.1f", score, self.min_score)
             return False
 
         if analysis.get("need_deep_analysis") is False:
@@ -87,6 +99,9 @@ class L3Analyzer:
         if self.require_full_content:
             # 检查是否已有全文，若无则尝试获取
             if article and not article.raw_html:
+                if not self.allow_content_fetch:
+                    logger.info("L3 不触发: 验证分析禁止重新采集全文")
+                    return False
                 logger.info("L3 尝试获取全文: %s", article.url)
                 html = ContentParser.fetch_full_content(article.url)
                 if not html and self.browser_fallback:
@@ -97,7 +112,7 @@ class L3Analyzer:
                     logger.info("L3 不触发: 无法获取全文")
                     return False
 
-        logger.info("L3 触发: value_score=%.1f, url=%s",
+        logger.info("L3 触发: rank_score=%.1f, url=%s",
                      score, article.url if article else "N/A")
         return True
 
@@ -115,6 +130,7 @@ class L3Analyzer:
         analysis = l2_result.get("analysis", {})
 
         if not article:
+            self._last_failure_reason = "article_missing"
             return None
 
         # 获取全文内容
@@ -137,6 +153,7 @@ class L3Analyzer:
         )
         if not system or not user:
             logger.warning("L3 Prompt 渲染失败")
+            self._last_failure_reason = "prompt_unavailable"
             return None
 
         # 调用 LLM（高质量模型，并发 1）
@@ -153,11 +170,13 @@ class L3Analyzer:
 
         if not result.get("success"):
             logger.warning("L3 LLM 调用失败")
+            self._last_failure_reason = "llm_failed"
             return None
 
         parsed = self.llm.parse_json_response(result)
         if parsed is None:
             logger.warning("L3 JSON 解析失败")
+            self._last_failure_reason = "parse_failed"
             return None
 
         insight = {
@@ -174,6 +193,7 @@ class L3Analyzer:
         if full_text:
             article.compute_content_hash(full_text)
 
+        self._last_failure_reason = ""
         return {"article": article, "insight": insight}
 
     def analyze_eligible(
@@ -186,17 +206,50 @@ class L3Analyzer:
             l2_results: L2 分析结果列表
         出参：深度洞察结果列表
         """
+        insights, _outcomes = self.analyze_eligible_with_outcomes(l2_results)
+        return insights
+
+    def analyze_eligible_with_outcomes(
+        self, l2_results: List[Dict[str, Any]]
+    ) -> tuple:
+        """Run selected L3 candidates and return article-level result reasons."""
         insights = []
+        outcomes = []
         for result in l2_results:
+            article = result.get("article")
+            base = {
+                "url_hash": article.url_hash if article else "",
+                "source_code": article.source_code if article else "",
+            }
             if not self.should_trigger(result):
+                outcomes.append({**base, "reason": self._trigger_reason(result)})
                 continue
             try:
                 insight = self.analyze(result)
                 if insight:
                     insights.append(insight)
+                    outcomes.append({**base, "reason": "success"})
+                else:
+                    outcomes.append({
+                        **base,
+                        "reason": getattr(self, "_last_failure_reason", "llm_failed"),
+                    })
             except Exception as e:
                 logger.exception("L3 分析异常")
+                outcomes.append({**base, "reason": "llm_failed"})
                 continue
 
         logger.info("L3 分析完成: triggered=%d", len(insights))
-        return insights
+        return insights, outcomes
+
+    def _trigger_reason(self, l2_result: Dict[str, Any]) -> str:
+        analysis = l2_result.get("analysis", {})
+        article = l2_result.get("article")
+        score = _rank_score(analysis)
+        if score < self.min_score:
+            return "score_below_threshold"
+        if analysis.get("need_deep_analysis") is False:
+            return "deep_analysis_not_needed"
+        if self.require_full_content and article and not article.raw_html:
+            return "full_content_failed"
+        return "not_triggered"

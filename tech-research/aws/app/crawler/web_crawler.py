@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
+from lxml import etree, html as lxml_html
 
 from crawler.base import BaseCrawler, RawArticle
 from crawler.browser_fetcher import BrowserFetcher
@@ -220,6 +221,20 @@ class WebCrawler(BaseCrawler):
         )
         self.request_interval = _safe_float(source.get("request_interval_seconds", ""), 1.0)
         self.page_url_pattern = source.get("page_url_pattern", "").strip()
+        self.list_link_xpath = source.get("list_link_xpath", "").strip()
+        self.list_title_xpath = source.get("list_title_xpath", "").strip()
+        self.xpath_strict = str(source.get("xpath_strict", "false")).lower() == "true"
+        self.article_url_pattern = source.get("article_url_pattern", "").strip()
+        self._article_url_regex = None
+        if self.article_url_pattern:
+            try:
+                self._article_url_regex = re.compile(self.article_url_pattern)
+            except re.error as exc:
+                logger.warning(
+                    "[%s] article_url_pattern 无效，忽略该约束: %s",
+                    self.source_code,
+                    str(exc),
+                )
 
         self.list_selectors = _split_selectors(source.get("list_selector", ""), [])
         self.link_selectors = _split_selectors(source.get("link_selector", ""), [])
@@ -258,6 +273,10 @@ class WebCrawler(BaseCrawler):
         )
 
         self.session = requests.Session()
+        self.request_headers = dict(WEB_REQUEST_HEADERS)
+        referer = source.get("referer", "").strip()
+        if referer:
+            self.request_headers["Referer"] = referer
 
     def fetch(self) -> List[RawArticle]:
         """执行 HTML 采集，返回标准 RawArticle 列表。"""
@@ -313,21 +332,26 @@ class WebCrawler(BaseCrawler):
             resp = self.session.get(
                 url,
                 timeout=self.timeout,
-                headers=WEB_REQUEST_HEADERS,
+                headers=self.request_headers,
                 allow_redirects=True,
             )
+            self.last_http_status = resp.status_code
+            self.last_effective_url = resp.url
             resp.raise_for_status()
             resp.encoding = resp.apparent_encoding or "utf-8"
             html = resp.text
         except requests.Timeout:
+            self.last_error = f"request timeout after {self.timeout}s"
             logger.warning("[%s] HTML 请求超时: %s", self.source_code, url)
         except requests.RequestException as e:
+            self.last_error = str(e)
             logger.warning("[%s] HTML 请求失败: %s, %s", self.source_code, url, str(e))
 
         if self.browser_fallback_enabled and self._needs_browser_fallback(html):
             logger.info("[%s] 启用浏览器降级采集: %s", self.source_code, url)
             rendered = self.browser_fetcher.fetch_html(url)
             if rendered:
+                self.last_error = ""
                 return rendered
         return html
 
@@ -396,6 +420,11 @@ class WebCrawler(BaseCrawler):
 
     def _parse_list_page(self, html: str, base_url: str) -> List[Dict[str, object]]:
         """解析列表页候选文章。"""
+        if self.list_link_xpath:
+            xpath_candidates = self._parse_xpath_list_page(html, base_url)
+            if xpath_candidates or self.xpath_strict:
+                return xpath_candidates
+
         soup = BeautifulSoup(html, "lxml")
         candidates: List[Dict[str, object]] = []
 
@@ -426,9 +455,74 @@ class WebCrawler(BaseCrawler):
             deduped.append(item)
         return deduped
 
+    def _parse_xpath_list_page(
+        self,
+        html: str,
+        base_url: str,
+    ) -> List[Dict[str, object]]:
+        """解析验证策略提供的 XPath；正式源仍默认使用 CSS 选择器。"""
+        try:
+            tree = lxml_html.fromstring(html)
+            href_values = tree.xpath(self.list_link_xpath)
+            title_values = tree.xpath(self.list_title_xpath) if self.list_title_xpath else []
+        except (ValueError, TypeError, etree.XPathError) as exc:
+            logger.warning("[%s] XPath 解析失败: %s", self.source_code, str(exc))
+            return []
+
+        candidates = []
+        for index, href_value in enumerate(href_values):
+            if hasattr(href_value, "get"):
+                href = href_value.get("href", "")
+                node_title = href_value.get("title", "") or href_value.text_content()
+            else:
+                href = str(href_value or "")
+                node_title = ""
+
+            url = self._normalize_article_url(href, base_url)
+            if not self._is_allowed_article_url(url):
+                continue
+
+            title_value = title_values[index] if index < len(title_values) else node_title
+            if hasattr(title_value, "text_content"):
+                title = title_value.text_content()
+            else:
+                title = str(title_value or "")
+            title = _clean_text(title)
+            if not self._is_allowed_title(title):
+                continue
+
+            candidates.append({
+                "title": title,
+                "url": url,
+                "author": "",
+                "publish_time": None,
+                "summary": "",
+            })
+
+        deduped = []
+        seen = set()
+        for item in candidates:
+            if item["url"] in seen:
+                continue
+            seen.add(item["url"])
+            deduped.append(item)
+        logger.info(
+            "[%s] XPath 列表解析完成: links=%d, candidates=%d",
+            self.source_code,
+            len(href_values),
+            len(deduped),
+        )
+        return deduped
+
     def _candidate_from_node(self, node, base_url: str) -> Optional[Dict[str, object]]:
         """从列表卡片节点中提取候选文章。"""
-        link = self._select_first(node, self.link_selectors) if self.link_selectors else node.find("a", href=True)
+        if getattr(node, "name", "") == "a" and node.get("href"):
+            link = node
+        else:
+            link = (
+                self._select_first(node, self.link_selectors)
+                if self.link_selectors else node.find("a", href=True)
+            )
         if not link:
             return None
 
@@ -498,6 +592,8 @@ class WebCrawler(BaseCrawler):
         if any(path.endswith(ext) for ext in BLOCKED_EXTENSIONS):
             return False
         if any(keyword in path for keyword in BLOCKED_PATH_KEYWORDS):
+            return False
+        if self._article_url_regex and not self._article_url_regex.search(url):
             return False
         if url.rstrip("/") == self.access_url.rstrip("/"):
             return False

@@ -10,18 +10,20 @@ import os
 import json
 import time
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 from collections import Counter
 
 from config import AWSConfig
 from crawler.base import CrawlerFactory, RawArticle
 from crawler.discovery_crawler import SearchDiscoveryCrawler
 from crawler.site_discovery_crawler import SiteDiscoveryCrawler
+from crawler.source_strategies import CONFIGURED, build_source_plans
 from processor.parser import ContentParser
 from processor.dedup import DedupManager
 from processor.collection_audit import CollectionAudit
 from processor.candidate_pool import CandidatePoolPlanner
 from processor.l2_analysis import L2Analyzer
+from processor.title_router import TitleRouter
 from deep.candidate_selector import L3CandidateSelector
 from deep.insight import L3Analyzer
 from exporter.import_client import ImportClient
@@ -47,7 +49,7 @@ class CollectOrchestrator:
         importer: ImportClient 实例
     """
 
-    def __init__(self, config: AWSConfig):
+    def __init__(self, config: AWSConfig, initialize_analysis: bool = True):
         """
         初始化编排器
 
@@ -58,6 +60,12 @@ class CollectOrchestrator:
         self.dedup = DedupManager(
             cache_path=f"{config.data_dir}/interim/processed_hashes.json"
         )
+
+        self.source_profiles = {
+            source["code"]: source for source in config.get_data_sources()
+        }
+        if not initialize_analysis:
+            return
 
         # 初始化 LLM 客户端：L2 / L3 使用不同超时时间
         api_key = self._get_api_key()
@@ -77,10 +85,6 @@ class CollectOrchestrator:
         # 初始化 Prompt 注册表
         self.prompts = PromptRegistry()
 
-        self.source_profiles = {
-            source["code"]: source for source in config.get_data_sources()
-        }
-
         # 初始化分析器
         self.l2 = L2Analyzer(
             self.l2_llm, self.prompts,
@@ -88,6 +92,13 @@ class CollectOrchestrator:
             model_name=config.l2_model["model"],
             source_profiles=self.source_profiles,
             deep_analysis_min_score=config.deep_insight_min_score,
+        )
+        self.title_router = TitleRouter(
+            self.l2_llm,
+            self.prompts,
+            config.title_routing_config,
+            model_name=config.l2_model["model"],
+            categories=self.l2.allowed_categories,
         )
         self.l3 = L3Analyzer(
             self.l3_llm, self.prompts,
@@ -101,6 +112,7 @@ class CollectOrchestrator:
         self.l3_selector = L3CandidateSelector(
             config.l3_selection_config,
             min_score=config.deep_insight_min_score,
+            source_profiles=self.source_profiles,
         )
 
         # 初始化导入客户端
@@ -137,11 +149,14 @@ class CollectOrchestrator:
         self,
         articles: List[RawArticle],
         seen_hashes: set,
+        use_history_cache: bool = True,
     ) -> List[RawArticle]:
         """候选阶段只检查历史和批内 URL，不提前写入已处理缓存。"""
         result = []
         for article in articles:
-            if article.url_hash in seen_hashes or self.dedup.is_duplicate(article):
+            if article.url_hash in seen_hashes or (
+                use_history_cache and self.dedup.is_duplicate(article)
+            ):
                 continue
             seen_hashes.add(article.url_hash)
             result.append(article)
@@ -167,6 +182,7 @@ class CollectOrchestrator:
         for source_code, items in grouped.items():
             crawler = crawlers.get(source_code)
             if not crawler:
+                hydrated.extend(items)
                 continue
             try:
                 hydrated.extend(crawler.fetch_candidates(items))
@@ -178,6 +194,7 @@ class CollectOrchestrator:
         self,
         articles: List[RawArticle],
         batch_content_hashes: set,
+        use_history_cache: bool = True,
     ) -> Tuple[List[RawArticle], Dict[str, int]]:
         """检查正文充分性和正文精确重复，返回可正式评分文章。"""
         minimum = self.config.candidate_pool_config["min_scoring_content_chars"]
@@ -196,7 +213,10 @@ class CollectOrchestrator:
             article.compute_content_hash(text)
             if (
                 article.content_hash in batch_content_hashes
-                or self.dedup.is_content_duplicate(article)
+                or (
+                    use_history_cache
+                    and self.dedup.is_content_duplicate(article)
+                )
             ):
                 content_duplicates += 1
                 continue
@@ -212,15 +232,22 @@ class CollectOrchestrator:
         candidates: List[RawArticle],
         crawlers: Dict[str, Any],
         batch_content_hashes: set,
+        use_history_cache: bool = True,
+        persist_processed: bool = True,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         hydrated = self._hydrate_candidates(candidates, crawlers)
-        prepared, quality_stats = self._prepare_for_l2(hydrated, batch_content_hashes)
+        prepared, quality_stats = self._prepare_for_l2(
+            hydrated,
+            batch_content_hashes,
+            use_history_cache=use_history_cache,
+        )
         results = self.l2.analyze_batch(prepared)
         successful_hashes = {result["article"].url_hash for result in results}
         for article in prepared:
             if article.url_hash not in successful_hashes and article.content_hash:
                 batch_content_hashes.discard(article.content_hash)
-        self.dedup.mark_processed_batch([result["article"] for result in results])
+        if persist_processed:
+            self.dedup.mark_processed_batch([result["article"] for result in results])
         return results, {
             "selected": len(candidates),
             "hydrated": len(hydrated),
@@ -262,6 +289,175 @@ class CollectOrchestrator:
                 filtered.append(article)
         return filtered
 
+    def collect_stage(
+        self,
+        strategy: str = CONFIGURED,
+        sources: Optional[List[str]] = None,
+        from_date: str = None,
+        to_date: str = None,
+        hydrate_candidates: bool = False,
+        audit: Optional[CollectionAudit] = None,
+        strict_sources: bool = False,
+    ) -> Dict[str, Any]:
+        """Run the shared source collection stage without analysis or import."""
+        configured_sources = self.config.get_data_sources()
+        plans = build_source_plans(
+            configured_sources,
+            strategy,
+            requested_codes=sources,
+        )
+        if sources and strict_sources:
+            found = {plan["source_code"] for plan in plans}
+            missing = sorted(set(sources) - found)
+            if missing:
+                raise ValueError(f"未知数据源: {', '.join(missing)}")
+
+        articles: List[RawArticle] = []
+        crawlers: Dict[str, Any] = {}
+        source_profiles: Dict[str, Dict[str, Any]] = {}
+        source_results: List[Dict[str, Any]] = []
+
+        for plan in plans:
+            attempts = []
+            selected_articles: List[RawArticle] = []
+            selected_source: Optional[Dict[str, Any]] = None
+            selected_crawler = None
+
+            for variant in plan["variants"]:
+                runtime = self._with_runtime_crawler_options(variant)
+                attempt = {
+                    "variant": runtime.get("_variant_name", "configured-source"),
+                    "access_url": runtime.get("access_url", ""),
+                    "fetch_method": runtime.get("fetch_method", "rss"),
+                    "status": "empty",
+                    "candidate_count": 0,
+                    "article_count": 0,
+                    "http_status": None,
+                    "effective_url": "",
+                    "error": "",
+                }
+                try:
+                    crawler = CrawlerFactory.create(runtime)
+                    candidates = crawler.discover_candidates()
+                    candidates = self._filter_by_date(candidates, from_date, to_date)
+                    attempt["http_status"] = crawler.last_http_status
+                    attempt["effective_url"] = crawler.last_effective_url
+                    attempt["error"] = (crawler.last_error or "")[:500]
+                    attempt["candidate_count"] = len(candidates)
+                    if not candidates:
+                        if attempt["error"] or (
+                            attempt["http_status"] is not None
+                            and attempt["http_status"] >= 400
+                        ):
+                            attempt["status"] = "failed"
+                        attempts.append(attempt)
+                        continue
+
+                    if hydrate_candidates:
+                        hydrated = crawler.fetch_candidates(candidates)
+                        hydrated_by_hash = {
+                            article.url_hash: article for article in hydrated
+                        }
+                        selected_articles = [
+                            hydrated_by_hash.get(article.url_hash, article)
+                            for article in candidates
+                        ]
+                    else:
+                        selected_articles = candidates
+
+                    attempt["article_count"] = len(selected_articles)
+                    attempt["status"] = "success"
+                    selected_source = runtime
+                    selected_crawler = crawler
+                    attempts.append(attempt)
+                    break
+                except Exception as exc:
+                    attempt["status"] = "failed"
+                    attempt["error"] = str(exc)[:500]
+                    attempts.append(attempt)
+                    logger.warning(
+                        "[%s] 采集变体失败: variant=%s, error=%s",
+                        plan["source_code"],
+                        attempt["variant"],
+                        str(exc),
+                    )
+
+            status = "success" if selected_articles else (
+                "failed" if any(item["status"] == "failed" for item in attempts)
+                else "empty"
+            )
+            articles.extend(selected_articles)
+            if selected_source:
+                source_profiles[plan["source_code"]] = selected_source
+                crawlers[plan["source_code"]] = selected_crawler
+
+            source_result = {
+                "source_code": plan["source_code"],
+                "source_name": plan["source_name"],
+                "category": plan["category"],
+                "status": status,
+                "article_count": len(selected_articles),
+                "selected_variant": (
+                    selected_source.get("_variant_name") if selected_source else None
+                ),
+                "source_profile": selected_source or {},
+                "attempts": attempts,
+            }
+            source_results.append(source_result)
+
+            if audit:
+                audit_source = selected_source or {
+                    "code": plan["source_code"],
+                    "name": plan["source_name"],
+                    "category": plan["category"],
+                    "fetch_method": attempts[-1]["fetch_method"] if attempts else "rss",
+                }
+                error = next(
+                    (item["error"] for item in reversed(attempts) if item["error"]),
+                    "",
+                )
+                audit.record_source(
+                    audit_source,
+                    len(selected_articles),
+                    status,
+                    error,
+                    details={
+                        "candidate_limit": self.config.candidate_pool_config[
+                            "candidate_limit_per_source"
+                        ],
+                        "candidate_cap_hit": len(selected_articles) >= self.config.candidate_pool_config[
+                            "candidate_limit_per_source"
+                        ],
+                        "selected_variant": source_result["selected_variant"],
+                        "from_date": from_date,
+                        "to_date": to_date,
+                    },
+                )
+
+            logger.info(
+                "[%s] 发现候选 %d 篇: strategy=%s, variant=%s",
+                plan["source_code"],
+                len(selected_articles),
+                strategy,
+                source_result["selected_variant"],
+            )
+
+        return {
+            "strategy": strategy,
+            "articles": articles,
+            "crawlers": crawlers,
+            "source_profiles": source_profiles,
+            "source_results": source_results,
+            "data_sources": [
+                source_profiles.get(plan["source_code"], plan["variants"][0])
+                for plan in plans
+            ],
+            "source_count": len(plans),
+            "error_count": sum(
+                1 for item in source_results if item["status"] == "failed"
+            ),
+        }
+
     def _coverage_gaps(self, l2_results: List[Dict[str, Any]]) -> List[str]:
         """识别分类覆盖不足或来源过度集中的方向，供一次性搜索补充。"""
         config = self.config.discovery_config
@@ -283,6 +479,297 @@ class CollectOrchestrator:
         if concentration > config["max_primary_source_ratio"] and not gaps:
             gaps = sorted(categories, key=lambda item: category_counts[item])
         return gaps
+
+    def analyze_stage(
+        self,
+        articles: List[RawArticle],
+        crawlers: Optional[Dict[str, Any]] = None,
+        source_profiles: Optional[Dict[str, Dict[str, Any]]] = None,
+        from_date: str = None,
+        to_date: str = None,
+        data_sources: Optional[List[Dict[str, Any]]] = None,
+        use_history_cache: bool = True,
+        persist_processed: bool = True,
+        enable_discovery: bool = True,
+        allow_l3_content_fetch: bool = True,
+        audit: Optional[CollectionAudit] = None,
+    ) -> Dict[str, Any]:
+        """Run the shared candidate, L2 and L3 stages with explicit side effects."""
+        crawlers = crawlers or {}
+        data_sources = data_sources or []
+        if source_profiles:
+            self.source_profiles.update(source_profiles)
+            self.l2.source_profiles.update(source_profiles)
+
+        stage_stats = {
+            "L1_candidate_pool": {
+                "total": len(articles),
+                "new": 0,
+                "skipped": 0,
+                "initial_selected": 0,
+                "deferred": 0,
+                "refill_selected": 0,
+                "source_counts": {},
+                "title_routing": {},
+            },
+            "L1_dedup": {
+                "total": len(articles),
+                "new": 0,
+                "skipped": 0,
+                "content_duplicates": 0,
+            },
+            "L2_analysis": {
+                "total": 0,
+                "success": 0,
+                "failed": 0,
+                "discarded": 0,
+                "content_insufficient": 0,
+                "initial": {},
+                "refill": {},
+            },
+            "L3_selection": {
+                "eligible": 0,
+                "topics": 0,
+                "selected": 0,
+                "excluded": 0,
+            },
+            "L3_insight": {"triggered": 0, "success": 0},
+            "L0_discovery": {
+                "triggered": False,
+                "site_total": 0,
+                "search_total": 0,
+                "total": 0,
+            },
+        }
+
+        seen_hashes = set()
+        new_candidates = self._filter_new_candidates(
+            articles,
+            seen_hashes,
+            use_history_cache=use_history_cache,
+        )
+        stage_stats["L1_dedup"].update({
+            "new": len(new_candidates),
+            "skipped": len(articles) - len(new_candidates),
+        })
+
+        routing_stats = self.title_router.route(
+            new_candidates,
+            self.source_profiles,
+        )
+        stage_stats["L1_candidate_pool"]["title_routing"] = routing_stats
+
+        planner = CandidatePoolPlanner(self.config.candidate_pool_config)
+        initial_candidates, deferred_candidates, pool_stats = planner.prepare(
+            new_candidates,
+            self.source_profiles,
+        )
+        initial_deferred = list(deferred_candidates)
+        stage_stats["L1_candidate_pool"].update({
+            "total": pool_stats["candidate_count"],
+            "new": pool_stats["candidate_count"],
+            "skipped": len(articles) - pool_stats["candidate_count"],
+            "initial_selected": pool_stats["initial_selected"],
+            "deferred": pool_stats["deferred"],
+            "source_counts": {
+                source_code: detail["candidates"]
+                for source_code, detail in pool_stats["source_counts"].items()
+            },
+            "source_stage_counts": pool_stats["source_counts"],
+            "predicted_category_counts": pool_stats["predicted_category_counts"],
+            "semantic_filtered": pool_stats["semantic_filtered"],
+        })
+
+        batch_content_hashes = set()
+        l2_results, initial_stats = self._analyze_selected(
+            initial_candidates,
+            crawlers,
+            batch_content_hashes,
+            use_history_cache=use_history_cache,
+            persist_processed=persist_processed,
+        )
+        stage_stats["L2_analysis"]["initial"] = initial_stats
+        for key in ("scored", "success", "failed", "content_insufficient"):
+            target = "total" if key == "scored" else key
+            stage_stats["L2_analysis"][target] += initial_stats[key]
+        stage_stats["L1_dedup"]["content_duplicates"] += initial_stats[
+            "content_duplicates"
+        ]
+
+        refill_gaps = self._candidate_refill_gaps(l2_results)
+        refill_candidates, deferred_candidates = planner.select_refill(
+            deferred_candidates,
+            refill_gaps,
+        )
+        stage_stats["L1_candidate_pool"]["refill_selected"] = len(refill_candidates)
+        refill_hashes = {article.url_hash for article in refill_candidates}
+        if refill_candidates:
+            refill_results, refill_stats = self._analyze_selected(
+                refill_candidates,
+                crawlers,
+                batch_content_hashes,
+                use_history_cache=use_history_cache,
+                persist_processed=persist_processed,
+            )
+            l2_results.extend(refill_results)
+        else:
+            refill_stats = {
+                "selected": 0,
+                "hydrated": 0,
+                "scored": 0,
+                "success": 0,
+                "failed": 0,
+                "content_insufficient": 0,
+                "content_duplicates": 0,
+            }
+        stage_stats["L2_analysis"]["refill"] = refill_stats
+        for key in ("scored", "success", "failed", "content_insufficient"):
+            target = "total" if key == "scored" else key
+            stage_stats["L2_analysis"][target] += refill_stats[key]
+        stage_stats["L1_dedup"]["content_duplicates"] += refill_stats[
+            "content_duplicates"
+        ]
+
+        if audit:
+            audit.save_candidate_pool([{
+                "source_code": article.source_code,
+                "title": article.title,
+                "url": article.url,
+                "publish_time": article.publish_time,
+                "ai_related": article.ai_related,
+                "predicted_category": article.predicted_category,
+                "info_type_hint": article.info_type_hint,
+                "route_confidence": article.route_confidence,
+                "route_reason": article.route_reason,
+                "route_method": article.route_method,
+                "status": (
+                    "refill_selected" if article.url_hash in refill_hashes else "deferred"
+                ),
+            } for article in initial_deferred])
+
+        discovery_config = self.config.discovery_config
+        if enable_discovery and discovery_config["enabled"]:
+            gaps = self._coverage_gaps(l2_results)
+            if gaps:
+                discovery_stats = stage_stats["L0_discovery"]
+                discovery_stats["triggered"] = True
+                mode = discovery_config.get("mode", "site")
+                discovered = []
+                if mode in ("site", "hybrid"):
+                    site_discovery = SiteDiscoveryCrawler(discovery_config, data_sources)
+                    site_articles = site_discovery.discover(gaps, from_date, to_date)
+                    discovered.extend(site_articles)
+                    discovery_stats["site_total"] = len(site_articles)
+
+                expected = discovery_config["min_articles_per_category"] * len(gaps)
+                if (
+                    mode in ("search", "hybrid")
+                    and discovery_config.get("search_enabled")
+                    and len(discovered) < expected
+                ):
+                    search_discovery = SearchDiscoveryCrawler(
+                        discovery_config,
+                        data_sources,
+                    )
+                    search_articles = search_discovery.discover(
+                        gaps,
+                        from_date,
+                        to_date,
+                    )
+                    discovered.extend(search_articles)
+                    discovery_stats["search_total"] = len(search_articles)
+
+                discovered = self._filter_by_date(discovered, from_date, to_date)
+                discovered_new = self._filter_new_candidates(
+                    discovered,
+                    seen_hashes,
+                    use_history_cache=use_history_cache,
+                )
+                discovered_prepared, discovered_quality = self._prepare_for_l2(
+                    discovered_new,
+                    batch_content_hashes,
+                    use_history_cache=use_history_cache,
+                )
+                discovered_results = self.l2.analyze_batch(discovered_prepared)
+                successful_hashes = {
+                    result["article"].url_hash for result in discovered_results
+                }
+                for article in discovered_prepared:
+                    if (
+                        article.url_hash not in successful_hashes
+                        and article.content_hash
+                    ):
+                        batch_content_hashes.discard(article.content_hash)
+                if persist_processed:
+                    self.dedup.mark_processed_batch([
+                        result["article"] for result in discovered_results
+                    ])
+                l2_results.extend(discovered_results)
+                discovery_stats["total"] = len(discovered)
+                stage_stats["L1_dedup"]["total"] += len(discovered)
+                stage_stats["L1_dedup"]["new"] += len(discovered_new)
+                stage_stats["L1_dedup"]["skipped"] += (
+                    len(discovered) - len(discovered_new)
+                )
+                stage_stats["L1_dedup"]["content_duplicates"] += discovered_quality[
+                    "content_duplicates"
+                ]
+                stage_stats["L2_analysis"]["total"] += len(discovered_prepared)
+                stage_stats["L2_analysis"]["success"] += len(discovered_results)
+                stage_stats["L2_analysis"]["failed"] += (
+                    len(discovered_prepared) - len(discovered_results)
+                )
+                stage_stats["L2_analysis"]["content_insufficient"] += discovered_quality[
+                    "content_insufficient"
+                ]
+
+        discarded_l2_results = [
+            result for result in l2_results if self._should_discard_analysis(result)
+        ]
+        l2_results = [
+            result for result in l2_results if not self._should_discard_analysis(result)
+        ]
+        stage_stats["L2_analysis"]["discarded"] = len(discarded_l2_results)
+        if discarded_l2_results:
+            logger.info(
+                "低价值非金融垂直场景文章已丢弃: discarded=%d",
+                len(discarded_l2_results),
+            )
+
+        old_allow_content_fetch = self.l3.allow_content_fetch
+        self.l3.allow_content_fetch = allow_l3_content_fetch
+        try:
+            l3_candidates, selection_stats = self.l3_selector.select(l2_results)
+            l3_results, execution_outcomes = self.l3.analyze_eligible_with_outcomes(
+                l3_candidates
+            )
+        finally:
+            self.l3.allow_content_fetch = old_allow_content_fetch
+        execution_by_hash = {
+            item["url_hash"]: item["reason"] for item in execution_outcomes
+        }
+        for item in selection_stats.get("article_outcomes", []):
+            if item.get("reason") == "selected" and item.get("url_hash") in execution_by_hash:
+                item["reason"] = execution_by_hash[item["url_hash"]]
+        stage_stats["L3_selection"] = selection_stats
+        stage_stats["L3_insight"] = {
+            "triggered": len(l3_candidates),
+            "success": len(l3_results),
+            "failure_reasons": dict(Counter(
+                item["reason"]
+                for item in execution_outcomes
+                if item["reason"] != "success"
+            )),
+        }
+
+        return {
+            "l2_results": l2_results,
+            "discarded_l2_results": discarded_l2_results,
+            "l3_candidates": l3_candidates,
+            "l3_results": l3_results,
+            "remaining_deferred": deferred_candidates,
+            "stats": stage_stats,
+        }
 
     def _persist_failed_import_payload(
         self,
@@ -322,10 +809,13 @@ class CollectOrchestrator:
         analysis = result.get("analysis", {})
         category = str(analysis.get("category") or "").strip()
         try:
-            value_score = float(analysis.get("value_score") or 0)
+            configured_score = analysis.get("rank_score")
+            if configured_score is None:
+                configured_score = analysis.get("value_score")
+            rank_score = float(configured_score or 0)
         except (TypeError, ValueError):
-            value_score = 0
-        return category == "其他AI相关" and value_score <= 5.0
+            rank_score = 0
+        return category == "其他AI相关" and rank_score <= 5.0
 
     def run(
         self,
@@ -373,199 +863,42 @@ class CollectOrchestrator:
             "import": {"status": "pending"},
         }
 
-        # === L0/L1: 发现来源候选，只读取标题、链接和列表摘要 ===
-        all_candidates: List[RawArticle] = []
-        source_crawlers: Dict[str, Any] = {}
-        data_sources = self.config.get_data_sources()
-        if sources:
-            data_sources = [s for s in data_sources if s["code"] in sources]
-
-        stats["L0_collect"]["sources"] = len(data_sources)
-
-        for source in data_sources:
-            try:
-                crawler = CrawlerFactory.create(self._with_runtime_crawler_options(source))
-                source_crawlers[source["code"]] = crawler
-                candidates = crawler.discover_candidates()
-                candidates = self._filter_by_date(candidates, from_date, to_date)
-                all_candidates.extend(candidates)
-                audit.record_source(
-                    source,
-                    len(candidates),
-                    "success" if candidates else "empty",
-                    details={
-                        "candidate_limit": self.config.candidate_pool_config[
-                            "candidate_limit_per_source"
-                        ],
-                        "candidate_cap_hit": len(candidates) >= self.config.candidate_pool_config[
-                            "candidate_limit_per_source"
-                        ],
-                        "from_date": from_date,
-                        "to_date": to_date,
-                    },
-                )
-                logger.info("[%s] 发现候选 %d 篇", source["code"], len(candidates))
-            except Exception as e:
-                logger.error("[%s] 采集异常: %s", source["code"], str(e))
-                stats["L0_collect"]["errors"] += 1
-                audit.record_source(source, 0, "failed", str(e))
-
-        stats["L0_collect"]["total"] = len(all_candidates)
-        stats["L1_candidate_pool"]["total"] = len(all_candidates)
-        stats["L1_candidate_pool"]["source_counts"] = dict(Counter(
-            article.source_code for article in all_candidates
-        ))
+        collection = self.collect_stage(
+            strategy=CONFIGURED,
+            sources=sources,
+            from_date=from_date,
+            to_date=to_date,
+            hydrate_candidates=False,
+            audit=audit,
+        )
+        all_candidates = collection["articles"]
+        source_crawlers = collection["crawlers"]
+        data_sources = collection["data_sources"]
+        stats["L0_collect"] = {
+            "total": len(all_candidates),
+            "sources": collection["source_count"],
+            "errors": collection["error_count"],
+        }
         logger.info("L1 候选发现完成: total_candidates=%d", len(all_candidates))
 
-        seen_hashes = set()
-        new_candidates = self._filter_new_candidates(all_candidates, seen_hashes)
-        stats["L1_candidate_pool"]["new"] = len(new_candidates)
-        stats["L1_candidate_pool"]["skipped"] = len(all_candidates) - len(new_candidates)
-        stats["L1_dedup"]["total"] = len(all_candidates)
-        stats["L1_dedup"]["new"] = len(new_candidates)
-        stats["L1_dedup"]["skipped"] = len(all_candidates) - len(new_candidates)
-
-        planner = CandidatePoolPlanner(self.config.candidate_pool_config)
-        initial_candidates, deferred_candidates, pool_stats = planner.prepare(
-            new_candidates, self.source_profiles
+        analysis_run = self.analyze_stage(
+            all_candidates,
+            crawlers=source_crawlers,
+            source_profiles=collection["source_profiles"],
+            from_date=from_date,
+            to_date=to_date,
+            data_sources=data_sources,
+            use_history_cache=True,
+            persist_processed=True,
+            enable_discovery=True,
+            allow_l3_content_fetch=True,
+            audit=audit,
         )
-        initial_deferred = list(deferred_candidates)
-        stats["L1_candidate_pool"].update({
-            "total": pool_stats["candidate_count"],
-            "new": pool_stats["candidate_count"],
-            "skipped": len(all_candidates) - pool_stats["candidate_count"],
-            "initial_selected": pool_stats["initial_selected"],
-            "deferred": pool_stats["deferred"],
-            "source_counts": {
-                source_code: detail["candidates"]
-                for source_code, detail in pool_stats["source_counts"].items()
-            },
-            "source_stage_counts": pool_stats["source_counts"],
-            "predicted_category_counts": pool_stats["predicted_category_counts"],
-        })
-
-        batch_content_hashes = set()
-        l2_results, initial_stats = self._analyze_selected(
-            initial_candidates, source_crawlers, batch_content_hashes
-        )
-        stats["L2_analysis"]["initial"] = initial_stats
-        stats["L2_analysis"]["total"] += initial_stats["scored"]
-        stats["L2_analysis"]["success"] += initial_stats["success"]
-        stats["L2_analysis"]["failed"] += initial_stats["failed"]
-        stats["L2_analysis"]["content_insufficient"] += initial_stats["content_insufficient"]
-        stats["L1_dedup"]["content_duplicates"] += initial_stats["content_duplicates"]
-
-        # === L2 覆盖补采：只为不足分类和疑似重大事件读取延迟候选正文 ===
-        refill_gaps = self._candidate_refill_gaps(l2_results)
-        refill_candidates, deferred_candidates = planner.select_refill(
-            deferred_candidates, refill_gaps
-        )
-        stats["L1_candidate_pool"]["refill_selected"] = len(refill_candidates)
-        refill_hashes = {article.url_hash for article in refill_candidates}
-        if refill_candidates:
-            refill_results, refill_stats = self._analyze_selected(
-                refill_candidates, source_crawlers, batch_content_hashes
-            )
-            l2_results.extend(refill_results)
-        else:
-            refill_stats = {
-                "selected": 0, "hydrated": 0, "scored": 0, "success": 0,
-                "failed": 0, "content_insufficient": 0, "content_duplicates": 0,
-            }
-        stats["L2_analysis"]["refill"] = refill_stats
-        stats["L2_analysis"]["total"] += refill_stats["scored"]
-        stats["L2_analysis"]["success"] += refill_stats["success"]
-        stats["L2_analysis"]["failed"] += refill_stats["failed"]
-        stats["L2_analysis"]["content_insufficient"] += refill_stats["content_insufficient"]
-        stats["L1_dedup"]["content_duplicates"] += refill_stats["content_duplicates"]
-
-        audit.save_candidate_pool([{
-            "source_code": article.source_code,
-            "title": article.title,
-            "url": article.url,
-            "publish_time": article.publish_time,
-            "predicted_category": article.predicted_category,
-            "possible_major_event": article.possible_major_event,
-            "status": "refill_selected" if article.url_hash in refill_hashes else "deferred",
-        } for article in initial_deferred])
-
-        # === 覆盖不足时自动发现已配置域名内的新 URL，再进入同一 L1/L2 链路 ===
-        discovery_config = self.config.discovery_config
-        if discovery_config["enabled"]:
-            gaps = self._coverage_gaps(l2_results)
-            if gaps:
-                stats["L0_discovery"]["triggered"] = True
-                mode = discovery_config.get("mode", "site")
-                discovered = []
-                if mode in ("site", "hybrid"):
-                    site_discovery = SiteDiscoveryCrawler(discovery_config, data_sources)
-                    site_articles = site_discovery.discover(gaps, from_date, to_date)
-                    discovered.extend(site_articles)
-                    stats["L0_discovery"]["site_total"] = len(site_articles)
-
-                expected = discovery_config["min_articles_per_category"] * len(gaps)
-                if (
-                    mode in ("search", "hybrid")
-                    and discovery_config.get("search_enabled")
-                    and len(discovered) < expected
-                ):
-                    search_discovery = SearchDiscoveryCrawler(discovery_config, data_sources)
-                    search_articles = search_discovery.discover(gaps, from_date, to_date)
-                    discovered.extend(search_articles)
-                    stats["L0_discovery"]["search_total"] = len(search_articles)
-
-                discovered = self._filter_by_date(discovered, from_date, to_date)
-                discovered_new = self._filter_new_candidates(discovered, seen_hashes)
-                discovered_prepared, discovered_quality = self._prepare_for_l2(
-                    discovered_new, batch_content_hashes
-                )
-                discovered_results = self.l2.analyze_batch(discovered_prepared)
-                discovered_success_hashes = {
-                    result["article"].url_hash for result in discovered_results
-                }
-                for article in discovered_prepared:
-                    if (
-                        article.url_hash not in discovered_success_hashes
-                        and article.content_hash
-                    ):
-                        batch_content_hashes.discard(article.content_hash)
-                self.dedup.mark_processed_batch([
-                    result["article"] for result in discovered_results
-                ])
-                l2_results.extend(discovered_results)
-                stats["L0_discovery"]["total"] = len(discovered)
-                stats["L1_dedup"]["total"] += len(discovered)
-                stats["L1_dedup"]["new"] += len(discovered_new)
-                stats["L1_dedup"]["skipped"] += len(discovered) - len(discovered_new)
-                stats["L1_dedup"]["content_duplicates"] += discovered_quality["content_duplicates"]
-                stats["L2_analysis"]["total"] += len(discovered_prepared)
-                stats["L2_analysis"]["success"] += len(discovered_results)
-                stats["L2_analysis"]["failed"] += len(discovered_prepared) - len(discovered_results)
-                stats["L2_analysis"]["content_insufficient"] += discovered_quality["content_insufficient"]
-        kept_l2_results = []
-        discarded_l2_results = []
-        for result in l2_results:
-            if self._should_discard_analysis(result):
-                discarded_l2_results.append(result)
-            else:
-                kept_l2_results.append(result)
-        if discarded_l2_results:
-            logger.info(
-                "低价值非金融垂直场景文章已丢弃: discarded=%d",
-                len(discarded_l2_results),
-            )
-        l2_results = kept_l2_results
-        stats["L2_analysis"]["discarded"] = len(discarded_l2_results)
-
-        # === L3: 深度洞察 ===
-        l3_results = []
-        l3_candidates = []
-        if l2_results:
-            l3_candidates, selection_stats = self.l3_selector.select(l2_results)
-            stats["L3_selection"] = selection_stats
-            l3_results = self.l3.analyze_eligible(l3_candidates)
-            stats["L3_insight"]["triggered"] = len(l3_candidates)
-            stats["L3_insight"]["success"] = len(l3_results)
+        stats.update(analysis_run["stats"])
+        l2_results = analysis_run["l2_results"]
+        discarded_l2_results = analysis_run["discarded_l2_results"]
+        l3_candidates = analysis_run["l3_candidates"]
+        l3_results = analysis_run["l3_results"]
 
         # 对所有文章计算清洗正文和 content_hash。
         for r in l2_results:
@@ -620,9 +953,11 @@ class CollectOrchestrator:
                 "standard_terms": a.get("standard_terms", []),
                 "score_tech_depth": a["score_tech_depth"],
                 "score_engineering": a["score_engineering"],
+                "score_org_relevance": a["score_org_relevance"],
                 "score_trend": a["score_trend"],
                 "score_credibility": a["score_credibility"],
                 "score_timeliness": a["score_timeliness"],
+                "rank_score": a["rank_score"],
                 "value_score": a["value_score"],
                 "model_name": a["model_name"],
                 "prompt_version": a["prompt_version"],
@@ -707,7 +1042,7 @@ class CollectOrchestrator:
                 "status": "analyzed",
                 "category": analysis.get("category"),
                 "info_type": analysis.get("info_type"),
-                "value_score": analysis.get("value_score"),
+                "rank_score": analysis.get("rank_score"),
                 "l3_candidate": article.url_hash in l3_candidate_hashes,
                 "l3_success": article.url_hash in l3_success_hashes,
             })
@@ -723,7 +1058,7 @@ class CollectOrchestrator:
                 "reason": "low_value_other_ai_vertical",
                 "category": analysis.get("category"),
                 "info_type": analysis.get("info_type"),
-                "value_score": analysis.get("value_score"),
+                "rank_score": analysis.get("rank_score"),
             })
         elapsed = time.time() - start_time
         stats["elapsed_seconds"] = round(elapsed, 1)

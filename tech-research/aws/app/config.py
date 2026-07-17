@@ -115,8 +115,22 @@ class AWSConfig:
             for key, value in self._config.items("DEFAULT"):
                 if key.startswith(prefix):
                     source[key[len(prefix):]] = value
+            if not source.get("selection_role"):
+                source["selection_role"] = self._default_selection_role(
+                    source.get("type", "")
+                )
             sources.append(source)
         return sources
+
+    @staticmethod
+    def _default_selection_role(source_type: str) -> str:
+        """Map source type to the L3/L4 soft-quota role."""
+        normalized = str(source_type or "").strip()
+        if normalized == "academic":
+            return "research"
+        if normalized in {"tech_media", "industry_application", "regulator"}:
+            return "industry"
+        return "engineering"
 
     # === 模型配置 ===
 
@@ -180,7 +194,13 @@ class AWSConfig:
     @property
     def deep_insight_min_score(self) -> float:
         """L3 深度洞察触发最低评分"""
-        return self.get_float("deep_insight.min_value_score", 8.0)
+        configured = self.get(option="deep_insight.min_rank_score", fallback="")
+        if configured:
+            try:
+                return float(configured)
+            except ValueError:
+                pass
+        return self.get_float("deep_insight.min_value_score", 6.5)
 
     @property
     def deep_insight_require_full_content(self) -> bool:
@@ -210,19 +230,38 @@ class AWSConfig:
         }
 
     @property
+    def title_routing_config(self) -> Dict:
+        """Lightweight semantic routing configuration for mixed sources."""
+        return {
+            "enabled": self.get(
+                option="title_routing.enabled", fallback="true"
+            ).lower() == "true",
+            "batch_size": self.get_int("title_routing.batch_size", 20),
+            "min_confidence": self.get_float("title_routing.min_confidence", 0.65),
+            "max_tokens": self.get_int("title_routing.max_tokens", 4096),
+        }
+
+    @property
     def l3_selection_config(self) -> Dict:
         """L3 前置主题聚合和来源均衡配置。"""
         return {
             "enabled": self.get(option="l3_selection.enabled", fallback="true").lower() == "true",
             "max_candidates_per_batch": self.get_int("l3_selection.max_candidates_per_batch", 36),
-            "max_candidates_per_source": self.get_int("l3_selection.max_candidates_per_source", 3),
-            "max_source_ratio": self.get_float("l3_selection.max_source_ratio", 0.2),
             "max_category_ratio": self.get_float("l3_selection.max_category_ratio", 0.35),
             "topic_similarity_threshold": self.get_float(
                 "l3_selection.topic_similarity_threshold", 0.34
             ),
-            "max_major_event_exceptions": self.get_int(
-                "l3_selection.max_major_event_exceptions", 0
+            "min_credibility_score": self.get_float(
+                "l3_selection.min_credibility_score", 6.5
+            ),
+            "engineering_source_ratio": self.get_float(
+                "l3_selection.engineering_source_ratio", 0.15
+            ),
+            "industry_source_ratio": self.get_float(
+                "l3_selection.industry_source_ratio", 0.10
+            ),
+            "research_source_ratio": self.get_float(
+                "l3_selection.research_source_ratio", 0.05
             ),
             "min_sources_for_balance": self.get_int(
                 "l3_selection.min_sources_for_balance", 3

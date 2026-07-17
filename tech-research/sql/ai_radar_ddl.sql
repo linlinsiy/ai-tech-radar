@@ -1,9 +1,13 @@
 ﻿-- AI技术趋势雷达数据库表结构
--- 版本: 2026-07-15
--- 用途: 全新环境完整建库。现有数据库升级请使用 ai_radar_alter_v*.sql。
--- 修改说明: 对齐当前 L1-L5 流程、九大文章分类和批次运营统计设计。
+-- 版本: 2026-07-17
+-- 用途: 重建数据库时的全量建库脚本。
+-- 修改说明: 对齐当前 L1-L5 流程、统一 rank_score、来源选题角色和批次运营统计设计。
 
 SET NAMES utf8mb4;
+-- 2026-07-17 维护基线：本文件是重建数据库时的唯一执行入口。
+-- 注意：下方 DROP TABLE 会删除并重建全部 ai_radar_* 表及初始化来源数据。
+-- 后续表结构、索引和初始化数据变更均直接更新本文件，不再新增常规增量 SQL 文件。
+-- 历史 ai_radar_alter_v*.sql 仅保留给已部署旧库的特定版本升级使用，不作为新建库入口。
 SET FOREIGN_KEY_CHECKS = 0;
 
 -- ----------------------------
@@ -51,17 +55,19 @@ CREATE TABLE `ai_radar_article_analysis` (
   `companies` json DEFAULT NULL COMMENT '涉及厂商',
   `score_tech_depth` decimal(3,1) DEFAULT NULL COMMENT '技术深度',
   `score_engineering` decimal(3,1) DEFAULT NULL COMMENT '工程参考价值',
+  `score_org_relevance` decimal(3,1) DEFAULT NULL COMMENT '组织相关性',
   `score_trend` decimal(3,1) DEFAULT NULL COMMENT '趋势重要性',
   `score_credibility` decimal(3,1) DEFAULT NULL COMMENT '来源可信度',
   `score_timeliness` decimal(3,1) DEFAULT NULL COMMENT '时效性',
-  `value_score` decimal(4,2) DEFAULT NULL COMMENT '综合价值评分',
+  `value_score` decimal(4,2) DEFAULT NULL COMMENT '旧字段兼容，新批次与rank_score同值',
+  `rank_score` decimal(4,2) DEFAULT NULL COMMENT '统一排序评分',
   `model_name` varchar(128) DEFAULT NULL COMMENT '调用模型',
   `prompt_version` varchar(64) DEFAULT NULL COMMENT 'Prompt版本',
   `analysis_status` varchar(32) NOT NULL DEFAULT 'success' COMMENT '分析状态',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_article_id` (`article_id`),
-  KEY `idx_value_score` (`value_score`),
+  KEY `idx_rank_score` (`rank_score`),
   KEY `idx_category` (`category`),
   KEY `idx_category_sub_category` (`category`, `sub_category`),
   KEY `idx_info_type` (`info_type`),
@@ -204,6 +210,7 @@ CREATE TABLE `ai_radar_source` (
   `source_name` varchar(128) NOT NULL COMMENT '数据源名称',
   `source_type` varchar(64) DEFAULT NULL COMMENT '数据源分类',
   `category` varchar(64) DEFAULT NULL COMMENT '数据源主题提示，仅辅助采集和L2判断，不代表文章最终分类',
+  `selection_role` varchar(16) NOT NULL DEFAULT 'industry' COMMENT '选题软配额角色(engineering/industry/research)',
   `access_url` varchar(512) DEFAULT NULL COMMENT 'RSS/API/网页地址',
   `domain` varchar(128) DEFAULT NULL COMMENT '访问域名',
   `fetch_method` varchar(16) NOT NULL DEFAULT 'rss' COMMENT '采集方式(rss/web)',
@@ -291,5 +298,12 @@ INSERT INTO ai_radar_source (source_code, source_name, source_type, category, ac
 -- ============================================================================
 ('10jqka-news',             '同花顺金融AI',                 'industry_application', '金融应用',  'https://news.10jqka.com.cn/',                             'news.10jqka.com.cn',          'web',  1),
 ('01caijing-home',       '零壹财经金融科技',             'industry_application', '金融应用',  'https://www.01caijing.com/',                      'www.01caijing.com',           'web',  1);
+
+UPDATE ai_radar_source
+SET selection_role = CASE
+  WHEN source_type = 'academic' THEN 'research'
+  WHEN source_type IN ('tech_media', 'industry_application', 'regulator') THEN 'industry'
+  ELSE 'engineering'
+END;
 
 SET FOREIGN_KEY_CHECKS = 1;

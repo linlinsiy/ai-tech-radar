@@ -34,12 +34,6 @@ CATEGORY_KEYWORDS = {
     "行业动态": ("融资", "并购", "发布", "政策", "市场", "厂商", "投资", "acquisition", "launch"),
 }
 
-MAJOR_EVENT_PATTERN = re.compile(
-    r"(?:正式发布|重大发布|全新模型|新一代|重大升级|突破|开源|并购|监管|政策|"
-    r"launch(?:es|ed)?|release[sd]?|new model|major upgrade|breakthrough)",
-    re.IGNORECASE,
-)
-
 AI_TERMS = (
     "ai", "人工智能", "大模型", "模型", "llm", "agent", "智能体", "机器学习", "深度学习",
     "生成式", "推理", "训练", "多模态", "rag", "copilot",
@@ -62,8 +56,12 @@ class CandidatePoolPlanner:
         source_profiles: Dict[str, Dict[str, str]],
     ) -> Tuple[List[RawArticle], List[RawArticle], Dict]:
         buckets = defaultdict(list)
+        semantic_filtered = 0
         for article in candidates:
             self._annotate(article, source_profiles.get(article.source_code, {}))
+            if article.ai_related is False:
+                semantic_filtered += 1
+                continue
             buckets[article.source_code].append(article)
 
         selected: List[RawArticle] = []
@@ -93,6 +91,7 @@ class CandidatePoolPlanner:
             "predicted_category_counts": dict(Counter(
                 article.predicted_category or "其他AI相关" for article in retained
             )),
+            "semantic_filtered": semantic_filtered,
         }
 
     def select_refill(
@@ -101,12 +100,8 @@ class CandidatePoolPlanner:
         categories: Iterable[str],
     ) -> Tuple[List[RawArticle], List[RawArticle]]:
         wanted = [category for category in categories if category]
-        selected: List[RawArticle] = sorted(
-            [article for article in deferred if article.possible_major_event],
-            key=self._sort_key,
-            reverse=True,
-        )
-        selected_hashes = {article.url_hash for article in selected}
+        selected: List[RawArticle] = []
+        selected_hashes = set()
         for category in wanted:
             matches = [
                 article for article in deferred
@@ -122,13 +117,16 @@ class CandidatePoolPlanner:
 
     def _annotate(self, article: RawArticle, source: Dict[str, str]) -> None:
         text = f"{article.title} {article.raw_summary or ''}".lower()
-        article.possible_major_event = bool(MAJOR_EVENT_PATTERN.search(text))
-        article.predicted_category = self._predict_category(text, source.get("category", ""))
+        if not article.predicted_category:
+            article.predicted_category = self._predict_category(
+                text,
+                source.get("category", ""),
+            )
         relevance = sum(1 for term in AI_TERMS if term in text)
         article.candidate_score = (
-            (100.0 if article.possible_major_event else 0.0)
-            + relevance * 5.0
+            relevance * 5.0
             + (2.0 if article.raw_summary else 0.0)
+            + article.route_confidence * 5.0
         )
 
     @staticmethod
@@ -160,4 +158,4 @@ class CandidatePoolPlanner:
     @staticmethod
     def _sort_key(article: RawArticle):
         published = article.publish_time or datetime.min
-        return article.possible_major_event, article.candidate_score, published
+        return article.candidate_score, published

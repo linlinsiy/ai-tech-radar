@@ -44,7 +44,11 @@ class RawArticle:
     raw_summary: Optional[str] = None
     content_hash: Optional[str] = None
     predicted_category: Optional[str] = None
-    possible_major_event: bool = False
+    ai_related: Optional[bool] = None
+    info_type_hint: Optional[str] = None
+    route_confidence: float = 0.0
+    route_reason: Optional[str] = None
+    route_method: Optional[str] = None
     candidate_score: float = 0.0
 
     def __post_init__(self):
@@ -92,6 +96,9 @@ class BaseCrawler(ABC):
         self.source_name = source["name"]
         self.access_url = source.get("access_url", "")
         self.domain = source.get("domain", "")
+        self.last_http_status: Optional[int] = None
+        self.last_effective_url = ""
+        self.last_error = ""
 
     @abstractmethod
     def fetch(self) -> List[RawArticle]:
