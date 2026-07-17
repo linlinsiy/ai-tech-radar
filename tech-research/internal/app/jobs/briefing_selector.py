@@ -69,13 +69,11 @@ class BriefingSelector:
     def select(self, articles: List[Dict], briefing_type: str) -> Tuple[List[Dict], Dict]:
         target = int(self.config.get(f"target_{briefing_type}", self.config.get("target_topic", 12)))
         minimum_score = float(self.config.get("min_rank_score", 6.5))
-        minimum_credibility = float(self.config.get("min_credibility_score", 6.5))
 
         enriched = [self._enrich(article) for article in articles]
         candidates = [
             article for article in enriched
             if article["rank_score"] >= minimum_score
-            and article["score_credibility"] >= minimum_credibility
         ]
         candidates.sort(key=lambda item: item["rank_score"], reverse=True)
         topics = self._cluster(candidates)
@@ -186,7 +184,6 @@ class BriefingSelector:
         enriched["rank_score"] = _number(
             article.get("rank_score"), _number(article.get("value_score"))
         )
-        enriched["score_credibility"] = _number(article.get("score_credibility"))
         enriched["terms"] = self._terms(enriched)
         return enriched
 

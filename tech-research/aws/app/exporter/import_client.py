@@ -59,6 +59,8 @@ class ImportClient:
         analyses: List[Dict[str, Any]],
         insights: List[Dict[str, Any]],
         operation_metrics: Optional[Dict[str, Any]] = None,
+        replace_insights_for_analyses: bool = False,
+        replace_insight_article_url_hashes: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         构建受控导入请求体
@@ -82,6 +84,12 @@ class ImportClient:
             "analyses": analyses,
             "insights": insights,
         }
+        if replace_insights_for_analyses:
+            payload["batch"]["replace_insights_for_analyses"] = True
+        if replace_insight_article_url_hashes:
+            payload["batch"]["replace_insight_article_url_hashes"] = (
+                replace_insight_article_url_hashes
+            )
         if operation_metrics is not None:
             payload["operation_metrics"] = operation_metrics
         return payload

@@ -105,7 +105,6 @@ class ArticleAnalysis(Base):
     score_engineering = Column(Numeric(3, 1), comment="工程参考价值")
     score_org_relevance = Column(Numeric(3, 1), comment="组织相关性")
     score_trend = Column(Numeric(3, 1), comment="趋势重要性")
-    score_credibility = Column(Numeric(3, 1), comment="来源可信度")
     score_timeliness = Column(Numeric(3, 1), comment="时效性")
     value_score = Column(Numeric(4, 2), comment="旧字段兼容，新批次与rank_score同值")
     rank_score = Column(Numeric(4, 2), comment="统一排序评分")

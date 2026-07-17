@@ -59,7 +59,6 @@ class L3CandidateSelector:
         self.max_candidates = max(1, int(config.get("max_candidates_per_batch", 36)))
         self.max_category_ratio = float(config.get("max_category_ratio", 0.35))
         self.similarity_threshold = float(config.get("topic_similarity_threshold", 0.34))
-        self.min_credibility = float(config.get("min_credibility_score", 6.5))
         self.min_sources_for_balance = max(1, int(config.get("min_sources_for_balance", 3)))
         self.min_categories_for_balance = max(1, int(config.get("min_categories_for_balance", 2)))
         self.source_role_ratios = {
@@ -227,8 +226,6 @@ class L3CandidateSelector:
             return "score_below_threshold"
         if analysis.get("need_deep_analysis") is False:
             return "deep_analysis_not_needed"
-        if _number(analysis.get("score_credibility"), 0) < self.min_credibility:
-            return "credibility_gate_failed"
         return ""
 
     def _enrich(self, result: Dict[str, Any]) -> Dict[str, Any]:

@@ -24,6 +24,8 @@ from crawler.source_strategies import (
 )
 from crawler.web_crawler import WebCrawler
 from crawler.rss_crawler import RSSCrawler
+from exporter.import_client import ImportClient
+from processor.collection_snapshot import CollectionSnapshotStore
 from deep.candidate_selector import L3CandidateSelector
 from deep.insight import L3Analyzer
 from api.jobs_api import (
@@ -117,7 +119,6 @@ class CollectionRuleTests(unittest.TestCase):
         info_type: str = "技术方案",
         score: float = 8.5,
         trend: float = 8.0,
-        credibility: float = 8.0,
     ):
         article = RawArticle(
             source_code=source,
@@ -137,7 +138,6 @@ class CollectionRuleTests(unittest.TestCase):
                 "score_engineering": score,
                 "score_org_relevance": score,
                 "score_trend": trend,
-                "score_credibility": credibility,
                 "score_timeliness": 8.0,
                 "rank_score": score,
                 "value_score": score,
@@ -155,16 +155,27 @@ class CollectionRuleTests(unittest.TestCase):
 
     def test_timeliness_uses_publish_age(self):
         crawled = datetime(2026, 7, 15)
-        self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=3), crawled), 10.0)
-        self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=60), crawled), 8.0)
-        self.assertEqual(L2Analyzer._timeliness_score(None, crawled), 5.0)
+        self.assertEqual(L2Analyzer._timeliness_score(crawled, crawled), 10.0)
+        self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=2), crawled), 9.0)
+        self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=3), crawled), 8.0)
+        self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=7), crawled), 7.0)
+        self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=21), crawled), 5.0)
+        self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=30), crawled), 4.0)
+        self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=60), crawled), 3.0)
+        self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=180), crawled), 1.0)
+        self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=181), crawled), 0.0)
+        self.assertEqual(L2Analyzer._timeliness_score(None, crawled), 0.0)
 
-    def test_source_credibility_uses_type_or_override(self):
-        self.assertEqual(L2Analyzer._source_credibility_score({"type": "academic"}), 9.0)
-        self.assertEqual(
-            L2Analyzer._source_credibility_score({"type": "tech_media", "credibility_score": "8.3"}),
-            8.3,
-        )
+    def test_l2_accepts_zero_for_org_relevance_and_trend(self):
+        scores = L2Analyzer._extract_scores({
+            "score_org_relevance": 0,
+            "score_trend": 0,
+            "score_tech_depth": 0,
+        })
+
+        self.assertEqual(scores["org_relevance"], 0.0)
+        self.assertEqual(scores["trend"], 0.0)
+        self.assertEqual(scores["tech_depth"], 5.0)
 
     def test_source_selection_roles_do_not_turn_financial_media_into_engineering_source(self):
         self.assertEqual(AWSConfig._default_selection_role("academic"), "research")
@@ -183,7 +194,7 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(profile["exclude_keywords"], "招聘")
         self.assertNotIn("api_key", profile)
 
-    def test_l2_rank_score_uses_single_formula_and_excludes_credibility(self):
+    def test_l2_rank_score_uses_single_five_dimension_formula(self):
         parsed = {
             "title_cn": "统一评分测试",
             "summary_cn": "摘要",
@@ -196,7 +207,6 @@ class CollectionRuleTests(unittest.TestCase):
             "engineering": 8,
             "org_relevance": 10,
             "trend": 9,
-            "credibility": 1,
             "timeliness": 1,
         }
         analyzer = L2Analyzer(
@@ -216,9 +226,8 @@ class CollectionRuleTests(unittest.TestCase):
 
         result = analyzer._analyze_single(article)
 
-        self.assertEqual(result["analysis"]["rank_score"], 8.3)
-        self.assertEqual(result["analysis"]["value_score"], 8.3)
-        self.assertEqual(result["analysis"]["score_credibility"], 8.5)
+        self.assertEqual(result["analysis"]["rank_score"], 8.35)
+        self.assertEqual(result["analysis"]["value_score"], 8.35)
 
     def test_title_router_keeps_low_confidence_and_has_no_importance_identity(self):
         llm = FakeLLM({
@@ -540,6 +549,46 @@ class CollectionRuleTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.load_collection("../outside")
 
+    def test_formal_analysis_snapshot_round_trip_preserves_raw_content(self):
+        article = RawArticle(
+            source_code="source-a",
+            title="AI工程平台升级",
+            url="https://example.com/article/1",
+            raw_html="<article>可复用的正文内容</article>",
+            raw_summary="列表摘要",
+            predicted_category="AI基础设施",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = CollectionSnapshotStore(temp_dir)
+            path = store.save(
+                "IMP-20260717-120000",
+                {"scope": "all"},
+                {"source-a": {"code": "source-a", "name": "Source A"}},
+                [article],
+            )
+            loaded = store.load_latest()
+            restored = CollectionSnapshotStore.article_from_dict(loaded["articles"][0])
+            self.assertTrue(os.path.isfile(path))
+
+        self.assertEqual(loaded["batch_no"], "IMP-20260717-120000")
+        self.assertEqual(restored.url_hash, article.url_hash)
+        self.assertEqual(restored.raw_html, article.raw_html)
+
+    def test_reanalysis_import_marks_insight_replacement_scope(self):
+        payload = ImportClient("http://example.com/import").build_payload(
+            batch_no="RERUN-20260717-120000",
+            task_type="reanalysis",
+            source_scope=["source-a"],
+            articles=[],
+            analyses=[],
+            insights=[],
+            replace_insights_for_analyses=True,
+            replace_insight_article_url_hashes=["hash-a"],
+        )
+
+        self.assertTrue(payload["batch"]["replace_insights_for_analyses"])
+        self.assertEqual(payload["batch"]["replace_insight_article_url_hashes"], ["hash-a"])
+
     def test_validation_collection_delegates_to_shared_collection_stage(self):
         config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
         service = ValidationCollectionService(AWSConfig(config_dir))
@@ -826,15 +875,15 @@ class CollectionRuleTests(unittest.TestCase):
         results = [
             self._l2_result(
                 "official", 1, title="模型 Alpha 发布", info_type="模型发布",
-                score=9.2, trend=9.5, credibility=9.0,
+                score=9.2, trend=9.5,
             ),
             self._l2_result(
                 "official", 2, title="模型 Beta 发布", info_type="模型发布",
-                score=9.1, trend=9.3, credibility=9.0,
+                score=9.1, trend=9.3,
             ),
             self._l2_result(
                 "official", 3, title="模型 Gamma 发布", info_type="模型发布",
-                score=9.0, trend=9.2, credibility=9.0,
+                score=9.0, trend=9.2,
             ),
             self._l2_result("independent", 1, score=8.5),
         ]
@@ -855,11 +904,11 @@ class CollectionRuleTests(unittest.TestCase):
         results = [
             self._l2_result(
                 "official", 1, title="模型 Alpha 正式发布", info_type="模型发布",
-                score=9.2, trend=9.5, credibility=9.0,
+                score=9.2, trend=9.5,
             ),
             self._l2_result(
                 "official", 2, title="模型 Beta 正式发布", info_type="模型发布",
-                score=9.1, trend=9.4, credibility=9.0,
+                score=9.1, trend=9.4,
             ),
         ]
 

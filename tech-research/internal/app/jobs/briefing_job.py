@@ -72,7 +72,6 @@ def _query_articles(session, start_date: datetime, end_date: datetime) -> List[D
             "score_engineering": float(analysis.score_engineering or 0),
             "score_org_relevance": float(analysis.score_org_relevance or 0),
             "score_trend": float(analysis.score_trend or 0),
-            "score_credibility": float(analysis.score_credibility or 0),
             "score_timeliness": float(analysis.score_timeliness or 0),
             "rank_score": float(rank_score or 0),
             "value_score": float(analysis.value_score or rank_score or 0),

@@ -57,7 +57,6 @@ CREATE TABLE `ai_radar_article_analysis` (
   `score_engineering` decimal(3,1) DEFAULT NULL COMMENT '工程参考价值',
   `score_org_relevance` decimal(3,1) DEFAULT NULL COMMENT '组织相关性',
   `score_trend` decimal(3,1) DEFAULT NULL COMMENT '趋势重要性',
-  `score_credibility` decimal(3,1) DEFAULT NULL COMMENT '来源可信度',
   `score_timeliness` decimal(3,1) DEFAULT NULL COMMENT '时效性',
   `value_score` decimal(4,2) DEFAULT NULL COMMENT '旧字段兼容，新批次与rank_score同值',
   `rank_score` decimal(4,2) DEFAULT NULL COMMENT '统一排序评分',

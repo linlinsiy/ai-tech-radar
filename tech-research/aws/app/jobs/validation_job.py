@@ -150,7 +150,7 @@ class ValidationCollectionService:
     def _safe_source_profile(source: Dict[str, Any]) -> Dict[str, Any]:
         allowed = {
             "code", "name", "type", "category", "domain", "access_url",
-            "fetch_method", "credibility_score", "_variant_name",
+            "fetch_method", "_variant_name",
             "selection_role", "semantic_routing", "include_keywords",
             "exclude_keywords",
         }

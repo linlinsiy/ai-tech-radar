@@ -190,7 +190,6 @@ class InternalConfig:
             "target_quarterly": self._config.getint("DEFAULT", "briefing.selection.target_quarterly", fallback=18),
             "target_topic": self._config.getint("DEFAULT", "briefing.selection.target_topic", fallback=12),
             "min_rank_score": self._config.getfloat("DEFAULT", "briefing.selection.min_rank_score", fallback=6.5),
-            "min_credibility_score": self._config.getfloat("DEFAULT", "briefing.selection.min_credibility_score", fallback=6.5),
             "max_primary_source_ratio": self._config.getfloat("DEFAULT", "briefing.selection.max_primary_source_ratio", fallback=0.15),
             "max_category_ratio": self._config.getfloat("DEFAULT", "briefing.selection.max_category_ratio", fallback=0.35),
             "min_sources_for_balance": self._config.getint("DEFAULT", "briefing.selection.min_sources_for_balance", fallback=3),

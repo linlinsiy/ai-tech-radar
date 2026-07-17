@@ -251,9 +251,6 @@ class AWSConfig:
             "topic_similarity_threshold": self.get_float(
                 "l3_selection.topic_similarity_threshold", 0.34
             ),
-            "min_credibility_score": self.get_float(
-                "l3_selection.min_credibility_score", 6.5
-            ),
             "engineering_source_ratio": self.get_float(
                 "l3_selection.engineering_source_ratio", 0.15
             ),

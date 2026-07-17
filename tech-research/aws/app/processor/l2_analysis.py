@@ -115,7 +115,6 @@ class L2Analyzer:
         # L2 同时读取摘要和有限正文片段，避免只凭列表摘要判断工程价值。
         input_text = self._prepare_input_text(article)
         source = self.source_profiles.get(article.source_code, {})
-        source_credibility = self._source_credibility_score(source)
         timeliness = self._timeliness_score(article.publish_time, article.crawl_time)
 
         # 渲染 Prompt
@@ -135,7 +134,6 @@ class L2Analyzer:
             publish_time=article.publish_time.isoformat() if article.publish_time else "unknown",
             crawl_time=article.crawl_time.isoformat(),
             content_length=len(input_text),
-            source_credibility_score=source_credibility,
             timeliness_score=timeliness,
         )
         if not system or not user:
@@ -173,13 +171,12 @@ class L2Analyzer:
 
         # 组装分析结果
         scores = self._extract_scores(parsed)
-        # 来源可信度和时效性由可核验元数据确定，不接受模型猜测值。
-        scores["credibility"] = source_credibility
+        # 时效性由可核验元数据确定，不接受模型猜测值。
         scores["timeliness"] = timeliness
         rank_score = (
-            scores.get("engineering", 5.0) * 0.30
+            scores.get("engineering", 5.0) * 0.25
             + scores.get("org_relevance", 5.0) * 0.25
-            + scores.get("trend", 5.0) * 0.30
+            + scores.get("trend", 5.0) * 0.35
             + scores.get("timeliness", 5.0) * 0.05
             + scores.get("tech_depth", 5.0) * 0.10
         )
@@ -204,7 +201,6 @@ class L2Analyzer:
             "score_engineering": scores.get("engineering", 5.0),
             "score_org_relevance": scores.get("org_relevance", 5.0),
             "score_trend": scores.get("trend", 5.0),
-            "score_credibility": scores.get("credibility", 5.0),
             "score_timeliness": scores.get("timeliness", 5.0),
             "rank_score": round(rank_score, 2),
             # 兼容旧导入字段；新批次不再计算独立 value_score。
@@ -229,46 +225,37 @@ class L2Analyzer:
         return "\n\n".join(parts) or article.title or ""
 
     @staticmethod
-    def _source_credibility_score(source: Dict[str, str]) -> float:
-        """从来源配置计算基础可信度；可用 credibility_score 单源覆盖。"""
-        configured = source.get("credibility_score")
-        if configured not in (None, ""):
-            try:
-                return max(1.0, min(10.0, float(configured)))
-            except (TypeError, ValueError):
-                pass
-        type_scores = {
-            "academic": 9.0,
-            "regulator": 9.0,
-            "vendor_blog": 8.5,
-            "industry_application": 8.0,
-            "tech_media": 7.5,
-            "tech_community": 7.0,
-        }
-        return type_scores.get(str(source.get("type") or "").strip(), 6.5)
-
-    @staticmethod
     def _timeliness_score(
         publish_time: Optional[datetime], crawl_time: Optional[datetime]
     ) -> float:
-        """按采集时文章年龄确定时效性，未知发布时间使用中性分。"""
+        """按采集时文章年龄确定时效性，未知发布时间不获得时效性加分。"""
         if not publish_time:
-            return 5.0
+            return 0.0
         reference = crawl_time or datetime.now()
         published = publish_time.replace(tzinfo=None)
         reference = reference.replace(tzinfo=None)
         age_days = max(0, (reference - published).days)
-        if age_days <= 7:
+        if age_days == 0:
             return 10.0
-        if age_days <= 30:
+        if age_days <= 2:
             return 9.0
-        if age_days <= 90:
+        if age_days <= 4:
             return 8.0
-        if age_days <= 180:
+        if age_days <= 7:
+            return 7.0
+        if age_days <= 14:
             return 6.0
-        if age_days <= 365:
+        if age_days <= 21:
+            return 5.0
+        if age_days <= 30:
             return 4.0
-        return 2.0
+        if age_days <= 60:
+            return 3.0
+        if age_days <= 90:
+            return 2.0
+        if age_days <= 180:
+            return 1.0
+        return 0.0
 
     @staticmethod
     def _ensure_bool(value) -> bool:
@@ -392,17 +379,17 @@ class L2Analyzer:
                 "org_relevance", "score_org_relevance", "组织相关性"
             ],
             "trend": ["trend", "score_trend", "趋势重要性"],
-            "credibility": ["credibility", "score_credibility", "来源可信度"],
             "timeliness": ["timeliness", "score_timeliness", "时效性"],
         }
         result = {}
         for key, candidates in score_keys.items():
             value = 5.0  # 默认中等
+            minimum = 0.0 if key in {"org_relevance", "trend", "timeliness"} else 1.0
             for c in candidates:
                 if c in parsed:
                     try:
                         v = float(parsed[c])
-                        if 1.0 <= v <= 10.0:
+                        if minimum <= v <= 10.0:
                             value = v
                             break
                     except (ValueError, TypeError):

@@ -22,7 +22,6 @@ def article(
     category,
     info_type,
     rank_score=7.5,
-    credibility=8,
     title=None,
 ):
     return {
@@ -45,7 +44,6 @@ def article(
         "score_engineering": 8,
         "score_org_relevance": 8,
         "score_trend": 8,
-        "score_credibility": credibility,
         "score_timeliness": 9,
         "rank_score": rank_score,
         "value_score": rank_score,
@@ -67,7 +65,6 @@ class BriefingSelectorTests(unittest.TestCase):
             "target_weekly": 8,
             "target_topic": 8,
             "min_rank_score": 6.5,
-            "min_credibility_score": 6.5,
             "max_primary_source_ratio": 0.15,
             "max_category_ratio": 0.35,
             "min_sources_for_balance": 3,
@@ -131,16 +128,6 @@ class BriefingSelectorTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 1)
         self.assertEqual(metadata["target_topics"], 1)
-
-    def test_low_credibility_topic_is_rejected_even_with_high_rank(self):
-        candidates = [
-            article(1, "unknown", "行业动态", "行业动态", rank_score=9.5, credibility=4.0)
-        ]
-
-        selected, metadata = BriefingSelector(self.config).select(candidates, "weekly")
-
-        self.assertEqual(selected, [])
-        self.assertEqual(metadata["candidate_articles"], 0)
 
     def test_l5_assembly_validates_four_topic_counts_and_sources(self):
         primary = article(1, "source-a", "Agent与智能体", "工程实践")

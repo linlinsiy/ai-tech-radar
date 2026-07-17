@@ -60,6 +60,15 @@ class BatchInfo(BaseModel):
 
     source_scope: Optional[List[str]] = Field(None, description="本次涉及数据源编码列表")
 
+    replace_insights_for_analyses: bool = Field(
+        False,
+        description="重分析时将本轮文章未重新生成的旧洞察标记为已替代",
+    )
+    replace_insight_article_url_hashes: Optional[List[str]] = Field(
+        None,
+        description="重分析时需要替代旧洞察的文章 URL 哈希列表",
+    )
+
 class ArticleItem(BaseModel):
 
     """文章导入项"""
@@ -118,13 +127,11 @@ class AnalysisItem(BaseModel):
 
     score_engineering: Optional[float] = Field(None, ge=1.0, le=10.0, description="工程参考价值")
 
-    score_org_relevance: Optional[float] = Field(None, ge=1.0, le=10.0, description="组织相关性")
+    score_org_relevance: Optional[float] = Field(None, ge=0.0, le=10.0, description="组织相关性")
 
-    score_trend: Optional[float] = Field(None, ge=1.0, le=10.0, description="趋势重要性")
+    score_trend: Optional[float] = Field(None, ge=0.0, le=10.0, description="趋势重要性")
 
-    score_credibility: Optional[float] = Field(None, ge=1.0, le=10.0, description="来源可信度")
-
-    score_timeliness: Optional[float] = Field(None, ge=1.0, le=10.0, description="时效性")
+    score_timeliness: Optional[float] = Field(None, ge=0.0, le=10.0, description="时效性")
 
     value_score: Optional[float] = Field(None, ge=0.0, le=10.0, description="旧字段兼容评分")
 
@@ -507,7 +514,6 @@ async def handle_import(request: Request, body: ImportRequest):
                     "score_engineering": item.score_engineering,
                     "score_org_relevance": item.score_org_relevance,
                     "score_trend": item.score_trend,
-                    "score_credibility": item.score_credibility,
                     "score_timeliness": item.score_timeliness,
                     "value_score": rank_score,
                     "rank_score": rank_score,
@@ -538,6 +544,31 @@ async def handle_import(request: Request, body: ImportRequest):
                     "detail": str(e),
 
                 })
+
+        # 重分析覆盖模式下，旧洞察不能继续参与后续简报选题。
+        if body.batch.replace_insights_for_analyses:
+            replacement_hashes = (
+                body.batch.replace_insight_article_url_hashes
+                or [item.article_url_hash for item in body.analyses]
+            )
+            analyzed_ids = {
+                url_hash_to_article_id[url_hash]
+                for url_hash in replacement_hashes
+                if url_hash in url_hash_to_article_id
+            }
+            refreshed_ids = {
+                url_hash_to_article_id[item.article_url_hash]
+                for item in body.insights
+                if item.article_url_hash in url_hash_to_article_id
+            }
+            stale_ids = analyzed_ids - refreshed_ids
+            if stale_ids:
+                session.query(DeepInsight).filter(
+                    DeepInsight.article_id.in_(stale_ids)
+                ).update(
+                    {DeepInsight.analysis_status: "superseded"},
+                    synchronize_session=False,
+                )
 
         # 5. 写入 insights
 

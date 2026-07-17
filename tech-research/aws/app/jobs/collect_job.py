@@ -21,6 +21,7 @@ from crawler.source_strategies import CONFIGURED, build_source_plans
 from processor.parser import ContentParser
 from processor.dedup import DedupManager
 from processor.collection_audit import CollectionAudit
+from processor.collection_snapshot import CollectionSnapshotStore
 from processor.candidate_pool import CandidatePoolPlanner
 from processor.l2_analysis import L2Analyzer
 from processor.title_router import TitleRouter
@@ -535,6 +536,7 @@ class CollectOrchestrator:
         enable_discovery: bool = True,
         allow_l3_content_fetch: bool = True,
         audit: Optional[CollectionAudit] = None,
+        replay_snapshot: bool = False,
     ) -> Dict[str, Any]:
         """Run the shared candidate, L2 and L3 stages with explicit side effects."""
         crawlers = crawlers or {}
@@ -595,32 +597,52 @@ class CollectOrchestrator:
             "skipped": len(articles) - len(new_candidates),
         })
 
-        routing_stats = self.title_router.route(
-            new_candidates,
-            self.source_profiles,
-        )
-        stage_stats["L1_candidate_pool"]["title_routing"] = routing_stats
-
         planner = CandidatePoolPlanner(self.config.candidate_pool_config)
-        initial_candidates, deferred_candidates, pool_stats = planner.prepare(
-            new_candidates,
-            self.source_profiles,
-        )
-        initial_deferred = list(deferred_candidates)
-        stage_stats["L1_candidate_pool"].update({
-            "total": pool_stats["candidate_count"],
-            "new": pool_stats["candidate_count"],
-            "skipped": len(articles) - pool_stats["candidate_count"],
-            "initial_selected": pool_stats["initial_selected"],
-            "deferred": pool_stats["deferred"],
-            "source_counts": {
-                source_code: detail["candidates"]
-                for source_code, detail in pool_stats["source_counts"].items()
-            },
-            "source_stage_counts": pool_stats["source_counts"],
-            "predicted_category_counts": pool_stats["predicted_category_counts"],
-            "semantic_filtered": pool_stats["semantic_filtered"],
-        })
+        if replay_snapshot:
+            # 快照仅保存已读取正文的文章；重跑从 L2 开始，不重新做标题路由或配额截断。
+            initial_candidates = new_candidates
+            deferred_candidates = []
+            initial_deferred = []
+            source_counts = dict(Counter(
+                article.source_code for article in initial_candidates
+            ))
+            stage_stats["L1_candidate_pool"].update({
+                "total": len(initial_candidates),
+                "new": len(initial_candidates),
+                "skipped": len(articles) - len(initial_candidates),
+                "initial_selected": len(initial_candidates),
+                "deferred": 0,
+                "source_counts": source_counts,
+                "source_stage_counts": {},
+                "predicted_category_counts": {},
+                "semantic_filtered": 0,
+                "replay_snapshot": True,
+            })
+        else:
+            routing_stats = self.title_router.route(
+                new_candidates,
+                self.source_profiles,
+            )
+            stage_stats["L1_candidate_pool"]["title_routing"] = routing_stats
+            initial_candidates, deferred_candidates, pool_stats = planner.prepare(
+                new_candidates,
+                self.source_profiles,
+            )
+            initial_deferred = list(deferred_candidates)
+            stage_stats["L1_candidate_pool"].update({
+                "total": pool_stats["candidate_count"],
+                "new": pool_stats["candidate_count"],
+                "skipped": len(articles) - pool_stats["candidate_count"],
+                "initial_selected": pool_stats["initial_selected"],
+                "deferred": pool_stats["deferred"],
+                "source_counts": {
+                    source_code: detail["candidates"]
+                    for source_code, detail in pool_stats["source_counts"].items()
+                },
+                "source_stage_counts": pool_stats["source_counts"],
+                "predicted_category_counts": pool_stats["predicted_category_counts"],
+                "semantic_filtered": pool_stats["semantic_filtered"],
+            })
 
         batch_content_hashes = set()
         l2_results, initial_stats = self._analyze_selected(
@@ -639,9 +661,9 @@ class CollectOrchestrator:
         ]
 
         refill_gaps = self._candidate_refill_gaps(l2_results)
-        refill_candidates, deferred_candidates = planner.select_refill(
-            deferred_candidates,
-            refill_gaps,
+        refill_candidates, deferred_candidates = (
+            planner.select_refill(deferred_candidates, refill_gaps)
+            if not replay_snapshot else ([], [])
         )
         stage_stats["L1_candidate_pool"]["refill_selected"] = len(refill_candidates)
         refill_hashes = {article.url_hash for article in refill_candidates}
@@ -883,6 +905,8 @@ class CollectOrchestrator:
 
         logger.info("====== 采集分析任务开始 ======")
         logger.info("batch_no=%s, scope=%s", batch_no, scope)
+        if scope == "rerun":
+            return self._run_snapshot_reanalysis(task_type)
 
         batch_time = datetime.now()
         stats = {
@@ -942,6 +966,28 @@ class CollectOrchestrator:
         l3_candidates = analysis_run["l3_candidates"]
         l3_results = analysis_run["l3_results"]
 
+        snapshot_store = CollectionSnapshotStore(self.config.data_dir)
+        replay_articles = [
+            result["article"]
+            for result in (l2_results + discarded_l2_results)
+        ]
+        snapshot_path = snapshot_store.save(
+            batch_no=batch_no,
+            request={
+                "scope": scope,
+                "sources": sources or [],
+                "from_date": from_date,
+                "to_date": to_date,
+                "task_type": task_type,
+            },
+            source_profiles=collection["source_profiles"],
+            articles=replay_articles,
+        )
+        stats["analysis_snapshot"] = {
+            "path": snapshot_path,
+            "article_count": len(replay_articles),
+        }
+
         # 对所有文章计算清洗正文和 content_hash。
         for r in l2_results:
             art = r["article"]
@@ -997,7 +1043,6 @@ class CollectOrchestrator:
                 "score_engineering": a["score_engineering"],
                 "score_org_relevance": a["score_org_relevance"],
                 "score_trend": a["score_trend"],
-                "score_credibility": a["score_credibility"],
                 "score_timeliness": a["score_timeliness"],
                 "rank_score": a["rank_score"],
                 "value_score": a["value_score"],
@@ -1112,6 +1157,164 @@ class CollectOrchestrator:
                      json.dumps(stats, ensure_ascii=False, default=str))
 
         return stats
+
+    def _run_snapshot_reanalysis(self, task_type: str) -> Dict[str, Any]:
+        """Replay the latest hydrated formal snapshot from L2 without re-crawling."""
+        snapshot = CollectionSnapshotStore(self.config.data_dir).load_latest()
+        articles = [
+            CollectionSnapshotStore.article_from_dict(item)
+            for item in snapshot.get("articles", [])
+        ]
+        if not articles:
+            raise ValueError("最近采集快照不包含可重新分析的正文文章")
+
+        batch_no = f"RERUN-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        batch_time = datetime.now()
+        logger.info(
+            "====== 采集快照重分析开始: batch_no=%s, snapshot=%s, articles=%d ======",
+            batch_no,
+            snapshot.get("batch_no"),
+            len(articles),
+        )
+        analysis_run = self.analyze_stage(
+            articles,
+            crawlers={},
+            source_profiles=snapshot.get("source_profiles") or {},
+            use_history_cache=False,
+            persist_processed=False,
+            enable_discovery=False,
+            allow_l3_content_fetch=False,
+            replay_snapshot=True,
+        )
+        l2_results = analysis_run["l2_results"]
+        discarded_l2_results = analysis_run["discarded_l2_results"]
+        l3_candidates = analysis_run["l3_candidates"]
+        l3_results = analysis_run["l3_results"]
+
+        for result in l2_results:
+            article = result["article"]
+            if not article.content_hash:
+                content = self._content_text(article) or article.url
+                article.compute_content_hash(content)
+
+        article_items = []
+        for result in l2_results:
+            article = result["article"]
+            article_items.append({
+                "url": article.url,
+                "url_hash": article.url_hash,
+                "source_code": article.source_code,
+                "title": article.title,
+                "author": article.author,
+                "publish_time": article.publish_time.isoformat() if article.publish_time else None,
+                "crawl_time": article.crawl_time.isoformat(),
+                "raw_summary": article.raw_summary,
+                "full_content": self._content_text(article),
+                "content_hash": article.content_hash,
+            })
+
+        analysis_items = []
+        for result in l2_results:
+            analysis = result["analysis"]
+            analysis_items.append({
+                "article_url_hash": result["article"].url_hash,
+                "source_language": analysis.get("source_language", "unknown"),
+                "title_cn": analysis.get("title_cn", result["article"].title),
+                "summary_cn": analysis["summary_cn"],
+                "category": analysis["category"],
+                "sub_category": analysis.get("sub_category", ""),
+                "info_type": analysis.get("info_type", ""),
+                "briefing_focus": analysis.get("briefing_focus", ""),
+                "analysis_detail": analysis.get("analysis_detail", {}),
+                "keywords": analysis["keywords"] if isinstance(analysis["keywords"], list) else [],
+                "tech_tags": analysis["tech_tags"] if isinstance(analysis["tech_tags"], list) else [],
+                "companies": analysis["companies"] if isinstance(analysis["companies"], list) else [],
+                "standard_terms": analysis.get("standard_terms", []),
+                "score_tech_depth": analysis["score_tech_depth"],
+                "score_engineering": analysis["score_engineering"],
+                "score_org_relevance": analysis["score_org_relevance"],
+                "score_trend": analysis["score_trend"],
+                "score_timeliness": analysis["score_timeliness"],
+                "rank_score": analysis["rank_score"],
+                "value_score": analysis["value_score"],
+                "model_name": analysis["model_name"],
+                "prompt_version": analysis["prompt_version"],
+            })
+        insight_items = [{
+            "article_url_hash": result["article"].url_hash,
+            "technical_background": result["insight"]["technical_background"],
+            "core_problem": result["insight"]["core_problem"],
+            "technical_solution": result["insight"]["technical_solution"],
+            "impact_analysis": result["insight"]["impact_analysis"],
+            "reference_value": result["insight"]["reference_value"],
+            "model_name": result["insight"]["model_name"],
+            "prompt_version": result["insight"]["prompt_version"],
+        } for result in l3_results]
+
+        source_profiles = snapshot.get("source_profiles") or {}
+        payload = self.importer.build_payload(
+            batch_no=batch_no,
+            task_type="reanalysis",
+            source_scope=sorted(source_profiles),
+            articles=article_items,
+            analyses=analysis_items,
+            insights=insight_items,
+            replace_insights_for_analyses=True,
+            replace_insight_article_url_hashes=[
+                result["article"].url_hash
+                for result in (l2_results + discarded_l2_results)
+            ],
+            operation_metrics={
+                "batch_time": batch_time.isoformat(),
+                "l1_article_count": len(articles),
+                "l1_source_distribution": dict(Counter(a.source_code for a in articles)),
+                "l2_article_count": len(l2_results),
+                "l2_source_distribution": dict(Counter(
+                    result["article"].source_code for result in l2_results
+                )),
+                "l2_category_distribution": dict(Counter(
+                    result["analysis"].get("category") or "其他AI相关"
+                    for result in l2_results
+                )),
+                "l3_article_count": len(l3_candidates),
+                "l3_source_distribution": dict(Counter(
+                    result["article"].source_code for result in l3_candidates
+                )),
+                "l3_category_distribution": dict(Counter(
+                    result["analysis"].get("category") or "其他AI相关"
+                    for result in l3_candidates
+                )),
+                "stage_detail": {
+                    **analysis_run["stats"],
+                    "replay_snapshot_batch_no": snapshot.get("batch_no"),
+                },
+            },
+        )
+        import_result = self.importer.import_batch(payload)
+        if not import_result.get("success"):
+            raise RuntimeError(
+                f"重分析导入失败: {import_result.get('error', 'unknown_error')}"
+            )
+        result = {
+            "batch_no": batch_no,
+            "scope": "rerun",
+            "task_type": task_type,
+            "snapshot_batch_no": snapshot.get("batch_no"),
+            "snapshot_article_count": len(articles),
+            "l2_success": len(l2_results),
+            "l2_discarded": len(discarded_l2_results),
+            "l3_selected": len(l3_candidates),
+            "l3_success": len(l3_results),
+            "import": {"status": "success"},
+            "stage_stats": analysis_run["stats"],
+        }
+        logger.info(
+            "====== 采集快照重分析完成: batch_no=%s, l2=%d, l3=%d ======",
+            batch_no,
+            len(l2_results),
+            len(l3_results),
+        )
+        return result
 
 
 def handle_collect_job(params: str = None) -> Dict[str, Any]:

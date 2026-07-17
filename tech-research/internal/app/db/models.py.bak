@@ -75,7 +75,6 @@ class ArticleAnalysis(Base):
     score_tech_depth = Column(Numeric(3, 1), comment="技术深度")
     score_engineering = Column(Numeric(3, 1), comment="工程参考价值")
     score_trend = Column(Numeric(3, 1), comment="趋势重要性")
-    score_credibility = Column(Numeric(3, 1), comment="来源可信度")
     score_timeliness = Column(Numeric(3, 1), comment="时效性")
     value_score = Column(Numeric(4, 2), comment="综合价值评分")
     model_name = Column(String(128), comment="调用模型")
