@@ -29,6 +29,7 @@ tech-research/internal/stdout2.txt
 tech-research/internal/stderr2.txt
 tech-research/internal/stdout3.txt
 tech-research/internal/stderr3.txt
+data/*
 
 # IDE
 .idea/
