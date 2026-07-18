@@ -712,10 +712,13 @@ class CollectionRuleTests(unittest.TestCase):
             result = orchestrator._run_snapshot_reanalysis(
                 "reanalysis",
                 "IMP-20260701-120000",
+                "monthly",
             )
 
         self.assertEqual(result["import"]["status"], "failed")
         self.assertEqual(result["import"]["retry_files"], retry_files)
+        self.assertEqual(result["processing_limits"]["period"], "monthly")
+        self.assertEqual(result["processing_limits"]["l3_max_candidates"], 50)
         load_snapshot.assert_called_once_with("IMP-20260701-120000")
         persist.assert_called_once_with(payload, failure, result)
 
@@ -953,6 +956,40 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(len(selected), 6)
         self.assertEqual(metadata["selection_mode"], "rank_only")
         self.assertEqual(metadata["source_counts"]["source-a"], 5)
+
+    def test_l3_candidates_accept_per_run_capacity_override(self):
+        selector = L3CandidateSelector({
+            "max_candidates_per_batch": 50,
+            "topic_similarity_threshold": 0.95,
+        }, min_score=6.0)
+        results = [
+            self._l2_result("source-a", index, score=9.0 - index * 0.1)
+            for index in range(4)
+        ]
+
+        selected, metadata = selector.select(results, max_candidates=2)
+
+        self.assertEqual(len(selected), 2)
+        self.assertEqual(metadata["capacity"], 2)
+
+    def test_processing_limits_use_weekly_or_long_period_profiles(self):
+        config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
+        config = AWSConfig(config_dir)
+
+        weekly = config.processing_limits("2026-07-13", "2026-07-19", "auto")
+        monthly = config.processing_limits("2026-06-01", "2026-06-30", "auto")
+        quarterly = config.processing_limits(collection_period="quarterly")
+
+        self.assertEqual(weekly["period"], "weekly")
+        self.assertEqual(weekly["candidate_pool"]["candidate_limit_per_source"], 60)
+        self.assertEqual(weekly["candidate_pool"]["initial_scored_per_source"], 30)
+        self.assertEqual(weekly["l3_max_candidates"], 40)
+        self.assertEqual(monthly["period"], "monthly")
+        self.assertEqual(monthly["candidate_pool"]["candidate_limit_per_source"], 100)
+        self.assertEqual(monthly["candidate_pool"]["initial_scored_per_source"], 50)
+        self.assertEqual(monthly["l3_max_candidates"], 50)
+        self.assertEqual(quarterly["period"], "quarterly")
+        self.assertEqual(quarterly["l3_max_candidates"], 50)
 
     def test_validation_l3_does_not_refetch_missing_content(self):
         analyzer = L3Analyzer(

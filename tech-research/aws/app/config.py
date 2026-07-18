@@ -9,6 +9,7 @@ AWS 侧配置加载模块
 """
 import configparser
 import os
+from datetime import datetime
 from typing import List, Dict, Optional
 
 
@@ -227,6 +228,46 @@ class AWSConfig:
             "min_scoring_content_chars": self.get_int(
                 "candidate_pool.min_scoring_content_chars", 100
             ),
+        }
+
+    def processing_limits(
+        self,
+        from_date: str = None,
+        to_date: str = None,
+        collection_period: str = None,
+    ) -> Dict:
+        """Resolve per-run limits from an explicit or inferred collection period."""
+        period = (collection_period or "auto").strip().lower()
+        weekly_max_days = self.get_int("collection.weekly_max_days", 7)
+        if period == "auto":
+            period = self.get(option="collection.default_period", fallback="weekly").lower()
+            if from_date and to_date:
+                try:
+                    start = datetime.fromisoformat(from_date).date()
+                    end = datetime.fromisoformat(to_date).date()
+                    if end >= start:
+                        period = "weekly" if (end - start).days + 1 <= weekly_max_days else "monthly"
+                except ValueError:
+                    pass
+        if period not in {"weekly", "monthly", "quarterly"}:
+            raise ValueError("collection_period 仅支持 auto、weekly、monthly 或 quarterly")
+
+        candidate_pool = dict(self.candidate_pool_config)
+        l3_max_candidates = self.l3_selection_config["max_candidates_per_batch"]
+        if period == "weekly":
+            candidate_pool["candidate_limit_per_source"] = self.get_int(
+                "candidate_pool.weekly_max_candidates_per_source", 60
+            )
+            candidate_pool["initial_scored_per_source"] = self.get_int(
+                "candidate_pool.weekly_initial_scored_per_source", 30
+            )
+            l3_max_candidates = self.get_int(
+                "l3_selection.weekly_max_candidates_per_batch", 40
+            )
+        return {
+            "period": period,
+            "candidate_pool": candidate_pool,
+            "l3_max_candidates": l3_max_candidates,
         }
 
     @property

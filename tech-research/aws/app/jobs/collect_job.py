@@ -133,7 +133,11 @@ class CollectOrchestrator:
             logger.warning("OPENAI_API_KEY 未设置")
         return key
 
-    def _with_runtime_crawler_options(self, source: Dict[str, str]) -> Dict[str, str]:
+    def _with_runtime_crawler_options(
+        self,
+        source: Dict[str, str],
+        candidate_pool_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
         """向数据源配置注入全局浏览器降级参数，不改变原始配置。"""
         runtime = dict(source)
         browser = self.config.browser_fallback_config
@@ -141,7 +145,7 @@ class CollectOrchestrator:
         runtime["_browser_timeout_seconds"] = str(browser["timeout_seconds"])
         runtime["_browser_min_content_chars"] = str(browser["min_content_chars"])
         runtime["_browser_executable_path"] = browser["executable_path"]
-        pool = self.config.candidate_pool_config
+        pool = candidate_pool_config or self.config.candidate_pool_config
         runtime["_candidate_limit"] = str(pool["candidate_limit_per_source"])
         runtime["_detail_limit"] = str(pool["initial_scored_per_source"])
         return runtime
@@ -258,8 +262,13 @@ class CollectOrchestrator:
             **quality_stats,
         }
 
-    def _candidate_refill_gaps(self, l2_results: List[Dict[str, Any]]) -> List[str]:
-        minimum = self.config.candidate_pool_config["refill_min_per_category"]
+    def _candidate_refill_gaps(
+        self,
+        l2_results: List[Dict[str, Any]],
+        candidate_pool_config: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
+        pool = candidate_pool_config or self.config.candidate_pool_config
+        minimum = pool["refill_min_per_category"]
         counts = Counter(
             result.get("analysis", {}).get("category", "") for result in l2_results
         )
@@ -299,9 +308,11 @@ class CollectOrchestrator:
         hydrate_candidates: bool = False,
         audit: Optional[CollectionAudit] = None,
         strict_sources: bool = False,
+        candidate_pool_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Run the shared source collection stage without analysis or import."""
         configured_sources = self.config.get_data_sources()
+        pool = candidate_pool_config or self.config.candidate_pool_config
         plans = build_source_plans(
             configured_sources,
             strategy,
@@ -326,7 +337,7 @@ class CollectOrchestrator:
             best_partial = None
 
             for variant in plan["variants"]:
-                runtime = self._with_runtime_crawler_options(variant)
+                runtime = self._with_runtime_crawler_options(variant, pool)
                 attempt = {
                     "variant": runtime.get("_variant_name", "configured-source"),
                     "access_url": runtime.get("access_url", ""),
@@ -465,10 +476,8 @@ class CollectOrchestrator:
                     status,
                     error,
                     details={
-                        "candidate_limit": self.config.candidate_pool_config[
-                            "candidate_limit_per_source"
-                        ],
-                        "candidate_cap_hit": len(selected_articles) >= self.config.candidate_pool_config[
+                        "candidate_limit": pool["candidate_limit_per_source"],
+                        "candidate_cap_hit": len(selected_articles) >= pool[
                             "candidate_limit_per_source"
                         ],
                         "selected_variant": source_result["selected_variant"],
@@ -537,6 +546,8 @@ class CollectOrchestrator:
         allow_l3_content_fetch: bool = True,
         audit: Optional[CollectionAudit] = None,
         replay_snapshot: bool = False,
+        candidate_pool_config: Optional[Dict[str, Any]] = None,
+        l3_max_candidates: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Run the shared candidate, L2 and L3 stages with explicit side effects."""
         crawlers = crawlers or {}
@@ -597,7 +608,8 @@ class CollectOrchestrator:
             "skipped": len(articles) - len(new_candidates),
         })
 
-        planner = CandidatePoolPlanner(self.config.candidate_pool_config)
+        pool = candidate_pool_config or self.config.candidate_pool_config
+        planner = CandidatePoolPlanner(pool)
         if replay_snapshot:
             # 快照仅保存已读取正文的文章；重跑从 L2 开始，不重新做标题路由或配额截断。
             initial_candidates = new_candidates
@@ -660,7 +672,7 @@ class CollectOrchestrator:
             "content_duplicates"
         ]
 
-        refill_gaps = self._candidate_refill_gaps(l2_results)
+        refill_gaps = self._candidate_refill_gaps(l2_results, pool)
         refill_candidates, deferred_candidates = (
             planner.select_refill(deferred_candidates, refill_gaps)
             if not replay_snapshot else ([], [])
@@ -803,7 +815,10 @@ class CollectOrchestrator:
         old_allow_content_fetch = self.l3.allow_content_fetch
         self.l3.allow_content_fetch = allow_l3_content_fetch
         try:
-            l3_candidates, selection_stats = self.l3_selector.select(l2_results)
+            l3_candidates, selection_stats = self.l3_selector.select(
+                l2_results,
+                max_candidates=l3_max_candidates,
+            )
             l3_results, execution_outcomes = self.l3.analyze_eligible_with_outcomes(
                 l3_candidates
             )
@@ -889,6 +904,7 @@ class CollectOrchestrator:
         to_date: str = None,
         task_type: str = "scheduled",
         reanalysis_batch_no: str = None,
+        collection_period: str = "auto",
     ) -> Dict[str, Any]:
         """
         执行采集分析全流程
@@ -899,6 +915,7 @@ class CollectOrchestrator:
             from_date: 开始日期（scope=timerange 时使用）
             to_date: 结束日期（scope=timerange 时使用）
             reanalysis_batch_no: 指定正式采集快照批次（scope=rerun 时使用，缺省为最近快照）
+            collection_period: auto / weekly / monthly / quarterly；auto 时按日期范围或默认配置判断
         出参：执行统计 {batch_no, phase_stats: {...}, ...}
         """
         start_time = time.time()
@@ -908,7 +925,24 @@ class CollectOrchestrator:
         logger.info("====== 采集分析任务开始 ======")
         logger.info("batch_no=%s, scope=%s", batch_no, scope)
         if scope == "rerun":
-            return self._run_snapshot_reanalysis(task_type, reanalysis_batch_no)
+            return self._run_snapshot_reanalysis(
+                task_type,
+                reanalysis_batch_no,
+                collection_period,
+            )
+
+        processing_limits = self.config.processing_limits(
+            from_date=from_date,
+            to_date=to_date,
+            collection_period=collection_period,
+        )
+        logger.info(
+            "采集周期档位: period=%s, candidates_per_source=%d, initial_l2_per_source=%d, l3_capacity=%d",
+            processing_limits["period"],
+            processing_limits["candidate_pool"]["candidate_limit_per_source"],
+            processing_limits["candidate_pool"]["initial_scored_per_source"],
+            processing_limits["l3_max_candidates"],
+        )
 
         batch_time = datetime.now()
         stats = {
@@ -938,6 +972,7 @@ class CollectOrchestrator:
             to_date=to_date,
             hydrate_candidates=False,
             audit=audit,
+            candidate_pool_config=processing_limits["candidate_pool"],
         )
         all_candidates = collection["articles"]
         source_crawlers = collection["crawlers"]
@@ -961,6 +996,8 @@ class CollectOrchestrator:
             enable_discovery=True,
             allow_l3_content_fetch=True,
             audit=audit,
+            candidate_pool_config=processing_limits["candidate_pool"],
+            l3_max_candidates=processing_limits["l3_max_candidates"],
         )
         stats.update(analysis_run["stats"])
         l2_results = analysis_run["l2_results"]
@@ -981,6 +1018,8 @@ class CollectOrchestrator:
                 "from_date": from_date,
                 "to_date": to_date,
                 "task_type": task_type,
+                "collection_period": collection_period,
+                "resolved_collection_period": processing_limits["period"],
             },
             source_profiles=collection["source_profiles"],
             articles=replay_articles,
@@ -989,6 +1028,7 @@ class CollectOrchestrator:
             "path": snapshot_path,
             "article_count": len(replay_articles),
         }
+        stats["processing_limits"] = processing_limits
 
         # 对所有文章计算清洗正文和 content_hash。
         for r in l2_results:
@@ -1164,6 +1204,7 @@ class CollectOrchestrator:
         self,
         task_type: str,
         reanalysis_batch_no: str = None,
+        collection_period: str = "auto",
     ) -> Dict[str, Any]:
         """Replay a named formal snapshot from L2 without re-crawling."""
         snapshot_store = CollectionSnapshotStore(self.config.data_dir)
@@ -1171,6 +1212,20 @@ class CollectOrchestrator:
             snapshot_store.load(reanalysis_batch_no)
             if reanalysis_batch_no
             else snapshot_store.load_latest()
+        )
+        snapshot_request = snapshot.get("request") or {}
+        processing_limits = self.config.processing_limits(
+            from_date=snapshot_request.get("from_date"),
+            to_date=snapshot_request.get("to_date"),
+            collection_period=(
+                collection_period
+                if collection_period != "auto"
+                else (
+                    snapshot_request.get("resolved_collection_period")
+                    or snapshot_request.get("collection_period")
+                    or "auto"
+                )
+            ),
         )
         articles = [
             CollectionSnapshotStore.article_from_dict(item)
@@ -1196,6 +1251,8 @@ class CollectOrchestrator:
             enable_discovery=False,
             allow_l3_content_fetch=False,
             replay_snapshot=True,
+            candidate_pool_config=processing_limits["candidate_pool"],
+            l3_max_candidates=processing_limits["l3_max_candidates"],
         )
         l2_results = analysis_run["l2_results"]
         discarded_l2_results = analysis_run["discarded_l2_results"]
@@ -1298,6 +1355,7 @@ class CollectOrchestrator:
                 "stage_detail": {
                     **analysis_run["stats"],
                     "replay_snapshot_batch_no": snapshot.get("batch_no"),
+                    "processing_limits": processing_limits,
                 },
             },
         )
@@ -1314,6 +1372,7 @@ class CollectOrchestrator:
                 "l3_selected": len(l3_candidates),
                 "l3_success": len(l3_results),
                 "stage_stats": analysis_run["stats"],
+                "processing_limits": processing_limits,
                 "import": {
                     "status": "failed",
                     "error": import_result.get("error", "unknown_error"),
@@ -1343,6 +1402,7 @@ class CollectOrchestrator:
             "l3_success": len(l3_results),
             "import": {"status": "success"},
             "stage_stats": analysis_run["stats"],
+            "processing_limits": processing_limits,
         }
         logger.info(
             "====== 采集快照重分析完成: batch_no=%s, l2=%d, l3=%d ======",
@@ -1367,6 +1427,7 @@ def handle_collect_job(params: str = None) -> Dict[str, Any]:
     to_date = None
     task_type = "scheduled"
     reanalysis_batch_no = None
+    collection_period = "auto"
 
     if params:
         try:
@@ -1380,6 +1441,7 @@ def handle_collect_job(params: str = None) -> Dict[str, Any]:
             to_date = ps.get("to_date") or ps.get("to")
             task_type = ps.get("task_type", "scheduled")
             reanalysis_batch_no = ps.get("reanalysis_batch_no")
+            collection_period = ps.get("collection_period", "auto")
         except json.JSONDecodeError:
             logger.warning("调度参数 JSON 解析失败: %s", params)
 
@@ -1392,5 +1454,6 @@ def handle_collect_job(params: str = None) -> Dict[str, Any]:
         to_date=to_date,
         task_type=task_type,
         reanalysis_batch_no=reanalysis_batch_no,
+        collection_period=collection_period,
     )
     return stats

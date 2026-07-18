@@ -61,6 +61,7 @@ class L3CandidateSelector:
     def select(
         self,
         l2_results: List[Dict[str, Any]],
+        max_candidates: Optional[int] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         outcomes: Dict[str, Dict[str, Any]] = {}
         eligible = []
@@ -78,7 +79,8 @@ class L3CandidateSelector:
 
         eligible.sort(key=self._sort_key, reverse=True)
         topics = self._cluster(eligible, outcomes)
-        capacity = min(self.max_candidates, len(topics))
+        configured_capacity = max(1, int(max_candidates or self.max_candidates))
+        capacity = min(configured_capacity, len(topics))
         selected = topics[:capacity]
 
         selected_ids = {topic["topic_id"] for topic in selected}
@@ -93,7 +95,7 @@ class L3CandidateSelector:
             "topics": len(topics),
             "selected": len(selected),
             "excluded": max(0, len(eligible) - len(selected)),
-            "capacity": self.max_candidates,
+            "capacity": configured_capacity,
             "selection_mode": "rank_only",
             "source_counts": dict(source_counts),
             "category_counts": dict(category_counts),

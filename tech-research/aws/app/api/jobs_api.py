@@ -62,6 +62,10 @@ class CollectJobRequest(BaseModel):
         pattern=r"^[A-Za-z0-9._-]+$",
         description="scope=rerun 时指定的正式采集快照批次号；未传时使用最近快照",
     )
+    collection_period: Literal["auto", "weekly", "monthly", "quarterly"] = Field(
+        default="auto",
+        description="采集规模档位；auto 时按日期范围或服务默认周期判断",
+    )
 
 
 class ValidationCollectRequest(CollectJobRequest):
