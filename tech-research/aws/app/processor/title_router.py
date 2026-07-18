@@ -61,6 +61,16 @@ class TitleRouter:
                 stats["fallback"] += len(batch)
                 for article in batch:
                     article.route_method = "rule_fallback"
+        logger.info(
+            "标题语义路由完成: candidates=%d, targets=%d, routed=%d, related=%d, filtered=%d, low_confidence=%d, fallback=%d",
+            stats["candidates"],
+            len(targets),
+            stats["routed"],
+            stats["ai_related"],
+            stats["filtered"],
+            stats["low_confidence"],
+            stats["fallback"],
+        )
         return stats
 
     def _route_batch(

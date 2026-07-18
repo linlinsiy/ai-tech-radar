@@ -205,6 +205,12 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(profile["exclude_keywords"], "招聘")
         self.assertNotIn("api_key", profile)
 
+    def test_generic_sources_can_opt_in_to_semantic_title_routing(self):
+        config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
+        sources = {item["code"]: item for item in AWSConfig(config_dir).get_data_sources()}
+        self.assertEqual(str(sources["simon-willison"]["semantic_routing"]).lower(), "true")
+        self.assertEqual(str(sources["stratechery"]["semantic_routing"]).lower(), "true")
+
     def test_l2_rank_score_uses_single_five_dimension_formula(self):
         parsed = {
             "title_cn": "统一评分测试",
