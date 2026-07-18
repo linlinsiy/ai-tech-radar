@@ -32,6 +32,7 @@ from api.jobs_api import (
     CollectJobRequest,
     ValidationAnalyzeRequest,
     ValidationCollectRequest,
+    list_analysis_snapshots,
     trigger_collect,
     trigger_validation_analysis,
     trigger_validation_collect,
@@ -173,12 +174,16 @@ class CollectionRuleTests(unittest.TestCase):
             "score_tech_depth": 0,
         })
 
-        self.assertEqual(scores["org_relevance"], 6.0)
+        self.assertEqual(scores["org_relevance"], 7.0)
         self.assertEqual(scores["trend"], 0.0)
         self.assertEqual(scores["tech_depth"], 0.0)
         self.assertEqual(
             L2Analyzer._extract_scores({"score_org_relevance": 5})["org_relevance"],
             3.0,
+        )
+        self.assertEqual(
+            L2Analyzer._extract_scores({"score_org_relevance": 9})["org_relevance"],
+            9.0,
         )
         self.assertEqual(L2Analyzer._extract_scores({})["org_relevance"], 0.0)
 
@@ -579,6 +584,51 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(restored.url_hash, article.url_hash)
         self.assertEqual(restored.raw_html, article.raw_html)
 
+    def test_formal_analysis_snapshot_can_load_named_batch_and_list_metadata(self):
+        article = RawArticle(
+            source_code="source-a",
+            title="AI工程平台升级",
+            url="https://example.com/article/1",
+            raw_html="正文",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = CollectionSnapshotStore(temp_dir)
+            store.save(
+                "IMP-20260701-120000",
+                {"scope": "timerange", "from_date": "2026-06-01", "to_date": "2026-06-30"},
+                {"source-a": {"code": "source-a"}},
+                [article],
+            )
+            store.save(
+                "IMP-20260718-120000",
+                {"scope": "all"},
+                {"source-a": {"code": "source-a"}},
+                [article],
+            )
+            selected = store.load("IMP-20260701-120000")
+            snapshots = store.list_snapshots()
+
+        self.assertEqual(selected["batch_no"], "IMP-20260701-120000")
+        self.assertEqual([item["batch_no"] for item in snapshots], [
+            "IMP-20260718-120000", "IMP-20260701-120000",
+        ])
+        self.assertEqual(snapshots[1]["from_date"], "2026-06-01")
+        with self.assertRaises(ValueError):
+            store.load("../outside")
+
+    def test_snapshot_list_api_returns_selectable_metadata(self):
+        class FakeConfig:
+            data_dir = "test-data"
+
+        with patch("config.AWSConfig", return_value=FakeConfig()), patch(
+            "processor.collection_snapshot.CollectionSnapshotStore.list_snapshots",
+            return_value=[{"batch_no": "IMP-month", "article_count": 100}],
+        ):
+            response = asyncio.run(list_analysis_snapshots())
+
+        self.assertTrue(response["success"])
+        self.assertEqual(response["data"]["snapshots"][0]["batch_no"], "IMP-month")
+
     def test_reanalysis_import_marks_insight_replacement_scope(self):
         payload = ImportClient("http://example.com/import").build_payload(
             batch_no="RERUN-20260717-120000",
@@ -640,9 +690,9 @@ class CollectionRuleTests(unittest.TestCase):
         }
 
         with patch(
-            "jobs.collect_job.CollectionSnapshotStore.load_latest",
+            "jobs.collect_job.CollectionSnapshotStore.load",
             return_value=snapshot,
-        ), patch.object(
+        ) as load_snapshot, patch.object(
             orchestrator,
             "analyze_stage",
             return_value=analysis_run,
@@ -659,10 +709,14 @@ class CollectionRuleTests(unittest.TestCase):
             "_persist_failed_import_payload",
             return_value=retry_files,
         ) as persist:
-            result = orchestrator._run_snapshot_reanalysis("reanalysis")
+            result = orchestrator._run_snapshot_reanalysis(
+                "reanalysis",
+                "IMP-20260701-120000",
+            )
 
         self.assertEqual(result["import"]["status"], "failed")
         self.assertEqual(result["import"]["retry_files"], retry_files)
+        load_snapshot.assert_called_once_with("IMP-20260701-120000")
         persist.assert_called_once_with(payload, failure, result)
 
     def test_validation_collection_delegates_to_shared_collection_stage(self):

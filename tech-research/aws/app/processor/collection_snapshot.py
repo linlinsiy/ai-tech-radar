@@ -94,6 +94,53 @@ class CollectionSnapshotStore:
         with open(self.latest_path, "r", encoding="utf-8") as handle:
             return json.load(handle)
 
+    def load(self, batch_no: str) -> Dict[str, Any]:
+        """Load one named formal snapshot without changing the latest pointer."""
+        self._validate_batch_no(batch_no)
+        path = os.path.join(self.directory, f"{batch_no}.json")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"未找到采集快照批次: {batch_no}")
+        with open(path, "r", encoding="utf-8") as handle:
+            snapshot = json.load(handle)
+        if snapshot.get("batch_no") != batch_no:
+            raise ValueError(f"采集快照批次内容不匹配: {batch_no}")
+        return snapshot
+
+    def list_snapshots(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return lightweight metadata for selectable formal analysis snapshots."""
+        if not os.path.isdir(self.directory):
+            return []
+        snapshots = []
+        for filename in os.listdir(self.directory):
+            if filename == "latest.json" or not filename.endswith(".json"):
+                continue
+            batch_no = filename[:-5]
+            if not self.SAFE_BATCH_PATTERN.fullmatch(batch_no):
+                continue
+            try:
+                snapshot = self.load(batch_no)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            request = snapshot.get("request") or {}
+            snapshots.append({
+                "batch_no": batch_no,
+                "created_at": snapshot.get("created_at"),
+                "article_count": int(snapshot.get("article_count") or 0),
+                "scope": request.get("scope"),
+                "from_date": request.get("from_date"),
+                "to_date": request.get("to_date"),
+                "sources": request.get("sources"),
+            })
+        snapshots.sort(
+            key=lambda item: (item.get("created_at") or "", item["batch_no"]),
+            reverse=True,
+        )
+        return snapshots[:max(1, min(limit, 500))]
+
+    def _validate_batch_no(self, batch_no: str) -> None:
+        if not batch_no or not self.SAFE_BATCH_PATTERN.fullmatch(batch_no):
+            raise ValueError("采集快照批次号仅允许字母、数字、点、下划线和连字符")
+
     @staticmethod
     def _atomic_write(path: str, payload: Dict[str, Any]) -> None:
         temp_path = f"{path}.tmp"

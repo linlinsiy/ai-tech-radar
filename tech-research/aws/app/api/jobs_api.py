@@ -29,7 +29,7 @@ class CollectJobRequest(BaseModel):
     采集分析任务请求体
 
     字段：
-        scope: 采集范围，all | sources | timerange（默认 all）
+        scope: 采集范围，all | sources | timerange | rerun（默认 all）
         sources: 数据源编码列表，逗号分隔
         from_date: 开始日期 YYYY-MM-DD（可与 sources 组合使用）
         to_date: 结束日期 YYYY-MM-DD（可与 sources 组合使用）
@@ -37,7 +37,7 @@ class CollectJobRequest(BaseModel):
     """
     scope: str = Field(
         default="all",
-        description="采集范围: all | sources | timerange"
+        description="采集范围: all | sources | timerange | rerun"
     )
     sources: Optional[str] = Field(
         default=None,
@@ -54,6 +54,13 @@ class CollectJobRequest(BaseModel):
     task_type: str = Field(
         default="manual_backfill",
         description="任务类型: scheduled | manual_backfill"
+    )
+    reanalysis_batch_no: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._-]+$",
+        description="scope=rerun 时指定的正式采集快照批次号；未传时使用最近快照",
     )
 
 
@@ -137,6 +144,20 @@ async def trigger_health_check():
     except Exception as e:
         logger.exception("健康检查执行异常")
         return {"success": False, "error": str(e)}
+
+
+async def list_analysis_snapshots():
+    """列出可用于 scope=rerun 的正式采集快照元数据。"""
+    try:
+        from config import AWSConfig
+        from processor.collection_snapshot import CollectionSnapshotStore
+
+        config = AWSConfig()
+        snapshots = CollectionSnapshotStore(config.data_dir).list_snapshots()
+        return {"success": True, "data": {"snapshots": snapshots}}
+    except Exception as exc:
+        logger.exception("查询正式采集快照失败")
+        return {"success": False, "error": str(exc)}
 
 
 async def trigger_validation_collect(request: ValidationCollectRequest):

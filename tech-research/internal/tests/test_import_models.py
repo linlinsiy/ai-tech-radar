@@ -5,12 +5,19 @@ import ast
 
 class ImportModelTests(unittest.TestCase):
     @staticmethod
-    def _analysis_score_bounds():
+    def _import_api_source():
         path = os.path.join(
             os.path.dirname(__file__), "..", "app", "api", "import_api.py"
         )
         with open(path, "r", encoding="utf-8") as source_file:
-            tree = ast.parse(source_file.read(), filename=path)
+            return source_file.read()
+
+    @staticmethod
+    def _analysis_score_bounds():
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "app", "api", "import_api.py"
+        )
+        tree = ast.parse(ImportModelTests._import_api_source(), filename=path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef) or node.name != "AnalysisItem":
                 continue
@@ -37,6 +44,14 @@ class ImportModelTests(unittest.TestCase):
 
         self.assertEqual(bounds["score_tech_depth"], 0.0)
         self.assertEqual(bounds["score_engineering"], 0.0)
+
+    def test_reanalysis_updates_existing_article_batch_reference(self):
+        source = self._import_api_source()
+
+        self.assertIn(
+            "existing_article.import_batch_id = batch.id",
+            source,
+        )
 
 
 if __name__ == "__main__":

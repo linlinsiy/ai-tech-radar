@@ -395,8 +395,9 @@ class L2Analyzer:
                     except (ValueError, TypeError):
                         pass
             result[key] = value
-        # 组织相关性使用固定锚点，避免模型评分再次集中在 7-8 分。
-        anchors = (0.0, 1.0, 3.0, 6.0, 8.0, 10.0)
+        # 组织相关性使用固定锚点，避免模型评分再次集中在 7-8 分，
+        # 同时保留“应知信号”和“可直接迁移工程实践”的区分粒度。
+        anchors = (0.0, 1.0, 3.0, 6.0, 7.0, 8.0, 9.0, 10.0)
         raw_org_score = result["org_relevance"]
         result["org_relevance"] = max(
             anchor for anchor in anchors if anchor <= raw_org_score

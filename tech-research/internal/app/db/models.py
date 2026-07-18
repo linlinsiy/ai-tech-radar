@@ -83,7 +83,7 @@ class Article(Base):
     raw_summary = Column(Text, comment="原文摘要")
     full_content = Column(Text, comment="完整原文")
     content_hash = Column(String(64), comment="内容指纹")
-    import_batch_id = Column(BigInteger, nullable=False, comment="导入批次 ID")
+    import_batch_id = Column(BigInteger, nullable=False, comment="最近一次导入或重分析批次 ID")
 
 
 class ArticleAnalysis(Base):

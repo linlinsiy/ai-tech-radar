@@ -57,16 +57,19 @@ def create_app(config: AWSConfig):
     from api.jobs_api import (
         trigger_collect,
         trigger_health_check,
+        list_analysis_snapshots,
         trigger_validation_analysis,
         trigger_validation_collect,
     )
     app.post("/api/v1/jobs/collect", response_model=None)(trigger_collect)
     app.post("/api/v1/jobs/health-check", response_model=None)(trigger_health_check)
+    app.get("/api/v1/jobs/analysis-snapshots", response_model=None)(list_analysis_snapshots)
     app.post("/api/v1/validation/collect", response_model=None)(trigger_validation_collect)
     app.post("/api/v1/validation/analyze", response_model=None)(trigger_validation_analysis)
     logger.info(
         "手动触发接口已注册: POST /api/v1/jobs/collect, "
-        "POST /api/v1/jobs/health-check, POST /api/v1/validation/collect, "
+        "POST /api/v1/jobs/health-check, GET /api/v1/jobs/analysis-snapshots, "
+        "POST /api/v1/validation/collect, "
         "POST /api/v1/validation/analyze"
     )
 

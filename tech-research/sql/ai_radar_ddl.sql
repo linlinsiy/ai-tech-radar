@@ -26,7 +26,7 @@ CREATE TABLE `ai_radar_article` (
   `raw_summary` text COMMENT '原文摘要',
   `full_content` longtext COMMENT '完整原文',
   `content_hash` char(64) DEFAULT NULL COMMENT '内容指纹',
-  `import_batch_id` bigint unsigned NOT NULL COMMENT '导入批次ID',
+  `import_batch_id` bigint unsigned NOT NULL COMMENT '最近一次导入或重分析批次ID',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),

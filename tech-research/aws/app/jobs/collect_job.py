@@ -888,6 +888,7 @@ class CollectOrchestrator:
         from_date: str = None,
         to_date: str = None,
         task_type: str = "scheduled",
+        reanalysis_batch_no: str = None,
     ) -> Dict[str, Any]:
         """
         执行采集分析全流程
@@ -897,6 +898,7 @@ class CollectOrchestrator:
             sources: 数据源编码列表（scope=sources 时使用）
             from_date: 开始日期（scope=timerange 时使用）
             to_date: 结束日期（scope=timerange 时使用）
+            reanalysis_batch_no: 指定正式采集快照批次（scope=rerun 时使用，缺省为最近快照）
         出参：执行统计 {batch_no, phase_stats: {...}, ...}
         """
         start_time = time.time()
@@ -906,7 +908,7 @@ class CollectOrchestrator:
         logger.info("====== 采集分析任务开始 ======")
         logger.info("batch_no=%s, scope=%s", batch_no, scope)
         if scope == "rerun":
-            return self._run_snapshot_reanalysis(task_type)
+            return self._run_snapshot_reanalysis(task_type, reanalysis_batch_no)
 
         batch_time = datetime.now()
         stats = {
@@ -1158,9 +1160,18 @@ class CollectOrchestrator:
 
         return stats
 
-    def _run_snapshot_reanalysis(self, task_type: str) -> Dict[str, Any]:
-        """Replay the latest hydrated formal snapshot from L2 without re-crawling."""
-        snapshot = CollectionSnapshotStore(self.config.data_dir).load_latest()
+    def _run_snapshot_reanalysis(
+        self,
+        task_type: str,
+        reanalysis_batch_no: str = None,
+    ) -> Dict[str, Any]:
+        """Replay a named formal snapshot from L2 without re-crawling."""
+        snapshot_store = CollectionSnapshotStore(self.config.data_dir)
+        snapshot = (
+            snapshot_store.load(reanalysis_batch_no)
+            if reanalysis_batch_no
+            else snapshot_store.load_latest()
+        )
         articles = [
             CollectionSnapshotStore.article_from_dict(item)
             for item in snapshot.get("articles", [])
@@ -1355,6 +1366,7 @@ def handle_collect_job(params: str = None) -> Dict[str, Any]:
     from_date = None
     to_date = None
     task_type = "scheduled"
+    reanalysis_batch_no = None
 
     if params:
         try:
@@ -1367,6 +1379,7 @@ def handle_collect_job(params: str = None) -> Dict[str, Any]:
             from_date = ps.get("from_date") or ps.get("from")
             to_date = ps.get("to_date") or ps.get("to")
             task_type = ps.get("task_type", "scheduled")
+            reanalysis_batch_no = ps.get("reanalysis_batch_no")
         except json.JSONDecodeError:
             logger.warning("调度参数 JSON 解析失败: %s", params)
 
@@ -1378,5 +1391,6 @@ def handle_collect_job(params: str = None) -> Dict[str, Any]:
         from_date=from_date,
         to_date=to_date,
         task_type=task_type,
+        reanalysis_batch_no=reanalysis_batch_no,
     )
     return stats
