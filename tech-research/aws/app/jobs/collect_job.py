@@ -929,6 +929,8 @@ class CollectOrchestrator:
                 task_type,
                 reanalysis_batch_no,
                 collection_period,
+                from_date,
+                to_date,
             )
 
         processing_limits = self.config.processing_limits(
@@ -1205,6 +1207,8 @@ class CollectOrchestrator:
         task_type: str,
         reanalysis_batch_no: str = None,
         collection_period: str = "auto",
+        from_date: str = None,
+        to_date: str = None,
     ) -> Dict[str, Any]:
         """Replay a named formal snapshot from L2 without re-crawling."""
         snapshot_store = CollectionSnapshotStore(self.config.data_dir)
@@ -1214,12 +1218,24 @@ class CollectOrchestrator:
             else snapshot_store.load_latest()
         )
         snapshot_request = snapshot.get("request") or {}
+        snapshot_articles = [
+            CollectionSnapshotStore.article_from_dict(item)
+            for item in snapshot.get("articles", [])
+        ]
+        articles = self._filter_by_date(snapshot_articles, from_date, to_date)
+        if not articles:
+            raise ValueError("指定快照在所选时间范围内不包含可重新分析的文章")
+
+        effective_from_date = from_date or snapshot_request.get("from_date")
+        effective_to_date = to_date or snapshot_request.get("to_date")
         processing_limits = self.config.processing_limits(
-            from_date=snapshot_request.get("from_date"),
-            to_date=snapshot_request.get("to_date"),
+            from_date=effective_from_date,
+            to_date=effective_to_date,
             collection_period=(
                 collection_period
                 if collection_period != "auto"
+                else "auto"
+                if from_date or to_date
                 else (
                     snapshot_request.get("resolved_collection_period")
                     or snapshot_request.get("collection_period")
@@ -1227,12 +1243,6 @@ class CollectOrchestrator:
                 )
             ),
         )
-        articles = [
-            CollectionSnapshotStore.article_from_dict(item)
-            for item in snapshot.get("articles", [])
-        ]
-        if not articles:
-            raise ValueError("最近采集快照不包含可重新分析的正文文章")
 
         batch_no = f"RERUN-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         batch_time = datetime.now()
@@ -1366,7 +1376,10 @@ class CollectOrchestrator:
                 "scope": "rerun",
                 "task_type": task_type,
                 "snapshot_batch_no": snapshot.get("batch_no"),
-                "snapshot_article_count": len(articles),
+                "snapshot_article_count": len(snapshot_articles),
+                "reanalysis_article_count": len(articles),
+                "from_date": from_date,
+                "to_date": to_date,
                 "l2_success": len(l2_results),
                 "l2_discarded": len(discarded_l2_results),
                 "l3_selected": len(l3_candidates),
@@ -1395,7 +1408,10 @@ class CollectOrchestrator:
             "scope": "rerun",
             "task_type": task_type,
             "snapshot_batch_no": snapshot.get("batch_no"),
-            "snapshot_article_count": len(articles),
+            "snapshot_article_count": len(snapshot_articles),
+            "reanalysis_article_count": len(articles),
+            "from_date": from_date,
+            "to_date": to_date,
             "l2_success": len(l2_results),
             "l2_discarded": len(discarded_l2_results),
             "l3_selected": len(l3_candidates),

@@ -722,6 +722,35 @@ class CollectionRuleTests(unittest.TestCase):
         load_snapshot.assert_called_once_with("IMP-20260701-120000")
         persist.assert_called_once_with(payload, failure, result)
 
+    def test_snapshot_reanalysis_rejects_empty_requested_date_range(self):
+        config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
+        orchestrator = CollectOrchestrator(AWSConfig(config_dir))
+        article = RawArticle(
+            source_code="source-a",
+            title="历史文章",
+            url="https://source-a.example.com/article/1",
+            publish_time=datetime(2026, 7, 1),
+            raw_html="<article>正文</article>",
+        )
+        snapshot = {
+            "batch_no": "IMP-source",
+            "articles": [CollectionSnapshotStore.article_to_dict(article)],
+            "source_profiles": {},
+        }
+
+        with patch(
+            "jobs.collect_job.CollectionSnapshotStore.load",
+            return_value=snapshot,
+        ):
+            with self.assertRaisesRegex(ValueError, "所选时间范围"):
+                orchestrator._run_snapshot_reanalysis(
+                    "reanalysis",
+                    "IMP-source",
+                    "weekly",
+                    "2026-07-10",
+                    "2026-07-16",
+                )
+
     def test_validation_collection_delegates_to_shared_collection_stage(self):
         config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
         service = ValidationCollectionService(AWSConfig(config_dir))
