@@ -496,7 +496,11 @@ def run_staged_analysis(
         from_date=from_date,
         to_date=to_date,
         data_sources=config.get_data_sources(),
-        use_history_cache=True,
+        # A named COL snapshot is an explicit replay input. Do not let a
+        # previous weekly run suppress articles needed by a later monthly run.
+        # Batch URL/content de-duplication still runs, and successful L2
+        # results are still written back to the shared cache for future jobs.
+        use_history_cache=False,
         persist_processed=True,
         enable_discovery=True,
         allow_l3_content_fetch=True,

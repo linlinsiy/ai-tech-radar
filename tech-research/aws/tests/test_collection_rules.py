@@ -666,6 +666,12 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(result["batch_no"], "RERUN-test")
         orchestrator_class.return_value._run_snapshot_reanalysis.assert_called_once()
 
+    def test_col_snapshot_analysis_ignores_history_cache_but_persists_results(self):
+        with open(os.path.join(APP_DIR, "jobs", "validation_job.py"), encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("use_history_cache=False", source)
+        self.assertIn("persist_processed=True", source)
+
     def test_snapshot_list_api_returns_selectable_metadata(self):
         class FakeConfig:
             data_dir = "test-data"

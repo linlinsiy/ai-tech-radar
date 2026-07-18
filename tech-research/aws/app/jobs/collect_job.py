@@ -1341,7 +1341,10 @@ class CollectOrchestrator:
             from_date=from_date,
             to_date=to_date,
             data_sources=self.config.get_data_sources() if is_collection_snapshot else [],
-            use_history_cache=is_collection_snapshot,
+            # Explicit COL replay is authoritative input and may be reused for
+            # weekly and monthly analysis. Only batch-level de-duplication
+            # applies; successful results still update the shared cache.
+            use_history_cache=False if is_collection_snapshot else True,
             persist_processed=is_collection_snapshot,
             enable_discovery=is_collection_snapshot,
             allow_l3_content_fetch=is_collection_snapshot,
