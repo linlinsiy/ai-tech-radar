@@ -607,9 +607,14 @@ class CollectionRuleTests(unittest.TestCase):
                 [article],
             )
             selected = store.load("IMP-20260701-120000")
+            selected_from_filename = store.load("IMP-20260701-120000.json")
             snapshots = store.list_snapshots()
 
         self.assertEqual(selected["batch_no"], "IMP-20260701-120000")
+        self.assertEqual(
+            selected_from_filename["batch_no"],
+            "IMP-20260701-120000",
+        )
         self.assertEqual([item["batch_no"] for item in snapshots], [
             "IMP-20260718-120000", "IMP-20260701-120000",
         ])
