@@ -594,6 +594,77 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertTrue(payload["batch"]["replace_insights_for_analyses"])
         self.assertEqual(payload["batch"]["replace_insight_article_url_hashes"], ["hash-a"])
 
+    def test_reanalysis_import_failure_persists_retry_payload(self):
+        config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
+        orchestrator = CollectOrchestrator(AWSConfig(config_dir))
+        article = RawArticle(
+            source_code="source-a",
+            title="AI工程平台升级",
+            url="https://source-a.example.com/article/1",
+            raw_html="<article>正文</article>",
+            crawl_time=datetime(2026, 7, 18),
+        )
+        l2_result = self._l2_result("source-a", 1, score=7.0)
+        l2_result["article"] = article
+        l2_result["analysis"].update({
+            "summary_cn": "摘要",
+            "sub_category": "",
+            "briefing_focus": "重点",
+            "analysis_detail": {},
+            "standard_terms": [],
+            "model_name": "test-model",
+            "prompt_version": "test-v1",
+        })
+        analysis_run = {
+            "l2_results": [l2_result],
+            "discarded_l2_results": [],
+            "l3_candidates": [],
+            "l3_results": [],
+            "stats": self._empty_stage_stats(),
+        }
+        payload = {
+            "batch": {
+                "batch_no": "RERUN-test",
+                "replace_insights_for_analyses": True,
+            }
+        }
+        snapshot = {
+            "batch_no": "IMP-source",
+            "articles": [CollectionSnapshotStore.article_to_dict(article)],
+            "source_profiles": {"source-a": {"code": "source-a"}},
+        }
+        failure = {"success": False, "error": "network_error"}
+        retry_files = {
+            "payload_file": "data/failed_imports/RERUN-test.payload.json",
+            "meta_file": "data/failed_imports/RERUN-test.meta.json",
+        }
+
+        with patch(
+            "jobs.collect_job.CollectionSnapshotStore.load_latest",
+            return_value=snapshot,
+        ), patch.object(
+            orchestrator,
+            "analyze_stage",
+            return_value=analysis_run,
+        ), patch.object(
+            orchestrator.importer,
+            "build_payload",
+            return_value=payload,
+        ), patch.object(
+            orchestrator.importer,
+            "import_batch",
+            return_value=failure,
+        ), patch.object(
+            orchestrator,
+            "_persist_failed_import_payload",
+            return_value=retry_files,
+        ) as persist:
+            result = orchestrator._run_snapshot_reanalysis("reanalysis")
+
+        self.assertEqual(result["import"]["status"], "failed")
+        self.assertEqual(result["import"]["retry_files"], retry_files)
+        persist.assert_called_once_with(payload, failure, result)
+
     def test_validation_collection_delegates_to_shared_collection_stage(self):
         config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
         service = ValidationCollectionService(AWSConfig(config_dir))

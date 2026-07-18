@@ -123,9 +123,9 @@ class AnalysisItem(BaseModel):
 
     standard_terms: Optional[List[Dict[str, Any]]] = Field(None, description="标准术语映射")
 
-    score_tech_depth: Optional[float] = Field(None, ge=1.0, le=10.0, description="技术深度")
+    score_tech_depth: Optional[float] = Field(None, ge=0.0, le=10.0, description="技术深度")
 
-    score_engineering: Optional[float] = Field(None, ge=1.0, le=10.0, description="工程参考价值")
+    score_engineering: Optional[float] = Field(None, ge=0.0, le=10.0, description="工程参考价值")
 
     score_org_relevance: Optional[float] = Field(None, ge=0.0, le=10.0, description="券商技术岗位领域匹配度")
 

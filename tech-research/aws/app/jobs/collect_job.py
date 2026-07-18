@@ -1292,9 +1292,34 @@ class CollectOrchestrator:
         )
         import_result = self.importer.import_batch(payload)
         if not import_result.get("success"):
-            raise RuntimeError(
-                f"重分析导入失败: {import_result.get('error', 'unknown_error')}"
+            retry_stats = {
+                "batch_no": batch_no,
+                "scope": "rerun",
+                "task_type": task_type,
+                "snapshot_batch_no": snapshot.get("batch_no"),
+                "snapshot_article_count": len(articles),
+                "l2_success": len(l2_results),
+                "l2_discarded": len(discarded_l2_results),
+                "l3_selected": len(l3_candidates),
+                "l3_success": len(l3_results),
+                "stage_stats": analysis_run["stats"],
+                "import": {
+                    "status": "failed",
+                    "error": import_result.get("error", "unknown_error"),
+                },
+            }
+            retry_files = self._persist_failed_import_payload(
+                payload,
+                import_result,
+                retry_stats,
             )
+            retry_stats["import"]["retry_files"] = retry_files
+            logger.error(
+                "重分析导入失败，已保存重试请求: batch_no=%s, error=%s",
+                batch_no,
+                retry_stats["import"]["error"],
+            )
+            return retry_stats
         result = {
             "batch_no": batch_no,
             "scope": "rerun",
