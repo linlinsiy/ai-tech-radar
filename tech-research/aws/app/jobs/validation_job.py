@@ -10,12 +10,15 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from config import AWSConfig
 from crawler.base import RawArticle
 from crawler.source_strategies import (
+    CONFIGURED,
     SERVER_RECOMMENDED,
     match_server_coverage_aliases,
 )
 from jobs.collect_job import CollectOrchestrator
 from logging_config import get_logger
 from processor.parser import ContentParser
+from processor.collection_audit import CollectionAudit
+from processor.collection_snapshot import CollectionSnapshotStore
 
 
 logger = get_logger("jobs.validation")
@@ -385,6 +388,184 @@ class ValidationAnalysisService:
         }
 
 
+def run_staged_collection(
+    config: AWSConfig,
+    scope: str = "all",
+    sources: Optional[List[str]] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    task_type: str = "manual_backfill",
+    collection_period: str = "auto",
+) -> Dict[str, Any]:
+    """Formal collection phase: capture hydrated source data without L2/L3/import."""
+    batch_no = _new_batch_no("COL")
+    limits = config.processing_limits(from_date, to_date, collection_period)
+    orchestrator = CollectOrchestrator(config, initialize_analysis=False)
+    audit = CollectionAudit(config.data_dir, batch_no)
+    collection = orchestrator.collect_stage(
+        strategy=CONFIGURED,
+        sources=sources,
+        from_date=from_date,
+        to_date=to_date,
+        hydrate_candidates=True,
+        audit=audit,
+        strict_sources=True,
+        candidate_pool_config=limits["candidate_pool"],
+    )
+    articles, duplicate_count = _deduplicate_urls(collection["articles"])
+    snapshot_path = CollectionSnapshotStore(config.data_dir).save(
+        batch_no=batch_no,
+        request={
+            "scope": scope,
+            "sources": sources or [],
+            "from_date": from_date,
+            "to_date": to_date,
+            "task_type": task_type,
+            "collection_period": collection_period,
+            "resolved_collection_period": limits["period"],
+        },
+        source_profiles=collection["source_profiles"],
+        articles=articles,
+        update_latest=False,
+    )
+    stats = {
+        "batch_no": batch_no,
+        "scope": scope,
+        "L0_collect": {
+            "total": len(collection["articles"]),
+            "sources": collection["source_count"],
+            "errors": collection["error_count"],
+        },
+        "article_count": len(articles),
+        "duplicate_url_count": duplicate_count,
+        "source_distribution": dict(Counter(item.source_code for item in articles)),
+        "processing_limits": limits,
+        "collection_snapshot": {"path": snapshot_path, "article_count": len(articles)},
+    }
+    audit.save([
+        {"source_code": item.source_code, "url": item.url, "title": item.title,
+         "publish_time": item.publish_time, "status": "collected"}
+        for item in articles
+    ], stats)
+    logger.info(
+        "====== 分阶段正式采集完成: batch_no=%s, articles=%d, snapshot=%s ======",
+        batch_no, len(articles), snapshot_path,
+    )
+    return {"batch_no": batch_no, "result_file": snapshot_path, **stats}
+
+
+def run_staged_analysis(
+    config: AWSConfig,
+    collection_batch_no: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    task_type: str = "manual_backfill",
+    collection_period: str = "auto",
+) -> Dict[str, Any]:
+    """Analyze a formal COL snapshot or reanalyze an existing analysis snapshot."""
+    store = CollectionSnapshotStore(config.data_dir)
+    snapshot = store.load(collection_batch_no)
+    if not str(snapshot.get("batch_no") or "").startswith("COL-"):
+        # Full collect and staged analysis both persist analysis snapshots. Reuse
+        # the same formal rerun path rather than maintaining a second L2/L3 flow.
+        return CollectOrchestrator(config)._run_snapshot_reanalysis(
+            task_type="reanalysis",
+            reanalysis_batch_no=collection_batch_no,
+            collection_period=collection_period,
+            from_date=from_date,
+            to_date=to_date,
+        )
+    request = snapshot.get("request") or {}
+    articles = [CollectionSnapshotStore.article_from_dict(item) for item in snapshot.get("articles", [])]
+    articles = CollectOrchestrator._filter_by_date(articles, from_date, to_date)
+    if not articles:
+        raise ValueError("指定采集批次在所选时间范围内不包含可分析文章")
+    effective_from = from_date or request.get("from_date")
+    effective_to = to_date or request.get("to_date")
+    period = collection_period if collection_period != "auto" else (
+        "auto" if from_date or to_date else request.get("resolved_collection_period", "auto")
+    )
+    limits = config.processing_limits(effective_from, effective_to, period)
+    batch_no = f"IMP-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    orchestrator = CollectOrchestrator(config)
+    audit = CollectionAudit(config.data_dir, batch_no)
+    analysis_run = orchestrator.analyze_stage(
+        articles,
+        crawlers={},
+        source_profiles=snapshot.get("source_profiles") or {},
+        from_date=from_date,
+        to_date=to_date,
+        data_sources=config.get_data_sources(),
+        use_history_cache=True,
+        persist_processed=True,
+        enable_discovery=True,
+        allow_l3_content_fetch=True,
+        audit=audit,
+        replay_snapshot=False,
+        candidate_pool_config=limits["candidate_pool"],
+        l3_max_candidates=limits["l3_max_candidates"],
+    )
+    l2_results = analysis_run["l2_results"]
+    discarded = analysis_run["discarded_l2_results"]
+    l3_candidates = analysis_run["l3_candidates"]
+    l3_results = analysis_run["l3_results"]
+    source_profiles = snapshot.get("source_profiles") or {}
+    operation_metrics = {
+        "batch_time": datetime.now().isoformat(),
+        "l1_article_count": analysis_run["stats"]["L1_candidate_pool"]["total"],
+        "l1_source_distribution": analysis_run["stats"]["L1_candidate_pool"].get("source_counts", {}),
+        "l2_article_count": len(l2_results),
+        "l2_source_distribution": dict(Counter(item["article"].source_code for item in l2_results)),
+        "l2_category_distribution": dict(Counter(item["analysis"].get("category") or "其他AI相关" for item in l2_results)),
+        "l3_article_count": len(l3_candidates),
+        "l3_source_distribution": dict(Counter(item["article"].source_code for item in l3_candidates)),
+        "l3_category_distribution": dict(Counter(item["analysis"].get("category") or "其他AI相关" for item in l3_candidates)),
+        "stage_detail": {**analysis_run["stats"], "collection_batch_no": collection_batch_no,
+                         "processing_limits": limits},
+    }
+    payload, import_result = orchestrator.import_analysis_results(
+        batch_no, task_type, source_profiles, l2_results, discarded, l3_candidates,
+        l3_results, operation_metrics,
+    )
+    result = {
+        "batch_no": batch_no,
+        "collection_batch_no": collection_batch_no,
+        "collection_article_count": len(snapshot.get("articles", [])),
+        "analysis_article_count": len(articles),
+        "from_date": from_date,
+        "to_date": to_date,
+        "l2_success": len(l2_results),
+        "l2_discarded": len(discarded),
+        "l3_selected": len(l3_candidates),
+        "l3_success": len(l3_results),
+        "processing_limits": limits,
+        "stage_stats": analysis_run["stats"],
+        "import": {"status": "success" if import_result.get("success") else "failed"},
+    }
+    if not import_result.get("success"):
+        result["import"]["error"] = import_result.get("error", "unknown_error")
+        result["import"]["retry_files"] = orchestrator._persist_failed_import_payload(
+            payload, import_result, result,
+        )
+        return result
+    analysis_path = store.save(
+        batch_no=batch_no,
+        request={**request, "collection_batch_no": collection_batch_no,
+                 "from_date": from_date, "to_date": to_date,
+                 "resolved_collection_period": limits["period"]},
+        source_profiles=source_profiles,
+        articles=[item["article"] for item in (l2_results + discarded)],
+        update_latest=True,
+    )
+    result["analysis_snapshot"] = {"path": analysis_path, "article_count": len(l2_results) + len(discarded)}
+    audit.save([], result)
+    logger.info(
+        "====== 分阶段正式分析完成: collection=%s, batch=%s, l2=%d, l3=%d ======",
+        collection_batch_no, batch_no, len(l2_results), len(l3_results),
+    )
+    return result
+
+
 def _parse_params(params: Any) -> Dict[str, Any]:
     if not params:
         return {}
@@ -398,13 +579,14 @@ def handle_validation_collect(params: Any = None) -> Dict[str, Any]:
     sources = parsed.get("sources")
     if isinstance(sources, str):
         sources = [item.strip() for item in sources.split(",") if item.strip()]
-    return ValidationCollectionService(AWSConfig()).run(
-        strategy=parsed.get("strategy", "primary_resilient"),
+    return run_staged_collection(
+        AWSConfig(),
         scope=parsed.get("scope", "all"),
         sources=sources,
         from_date=parsed.get("from_date") or parsed.get("from"),
         to_date=parsed.get("to_date") or parsed.get("to"),
         task_type=parsed.get("task_type", "manual_backfill"),
+        collection_period=parsed.get("collection_period", "auto"),
     )
 
 
@@ -413,4 +595,11 @@ def handle_validation_analysis(params: Any = None) -> Dict[str, Any]:
     collection_batch_no = parsed.get("collection_batch_no") or parsed.get("batch_no")
     if not collection_batch_no:
         raise ValueError("collection_batch_no 不能为空")
-    return ValidationAnalysisService(AWSConfig()).run(collection_batch_no)
+    return run_staged_analysis(
+        AWSConfig(),
+        collection_batch_no=collection_batch_no,
+        from_date=parsed.get("from_date") or parsed.get("from"),
+        to_date=parsed.get("to_date") or parsed.get("to"),
+        task_type=parsed.get("task_type", "manual_backfill"),
+        collection_period=parsed.get("collection_period", "auto"),
+    )

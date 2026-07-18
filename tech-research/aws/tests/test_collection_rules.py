@@ -43,6 +43,7 @@ from jobs.validation_job import (
     ValidationAnalysisService,
     ValidationCollectionService,
     ValidationStore,
+    run_staged_analysis,
 )
 from processor.candidate_pool import CandidatePoolPlanner
 from processor.l2_analysis import L2Analyzer
@@ -615,6 +616,44 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(snapshots[1]["from_date"], "2026-06-01")
         with self.assertRaises(ValueError):
             store.load("../outside")
+
+    def test_formal_collection_and_analysis_snapshots_share_one_schema(self):
+        article = RawArticle(
+            source_code="source-a",
+            title="AI工程平台升级",
+            url="https://example.com/article/1",
+            raw_html="正文",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = CollectionSnapshotStore(temp_dir)
+            store.save("COL-20260718-120000", {"scope": "all"}, {}, [article], update_latest=False)
+            store.save("IMP-20260718-120001", {"scope": "all"}, {}, [article])
+            collection = store.load("COL-20260718-120000")
+            analysis = store.load("IMP-20260718-120001")
+
+        self.assertEqual(set(collection), set(analysis))
+        self.assertNotIn("snapshot_type", collection)
+
+    def test_staged_analysis_delegates_existing_analysis_snapshot_to_formal_rerun(self):
+        article = RawArticle(
+            source_code="source-a",
+            title="AI工程平台升级",
+            url="https://example.com/article/1",
+            raw_html="正文",
+        )
+        class FakeConfig:
+            def __init__(self, data_dir):
+                self.data_dir = data_dir
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = CollectionSnapshotStore(temp_dir)
+            store.save("IMP-20260718-120001", {"scope": "all"}, {}, [article])
+            with patch("jobs.validation_job.CollectOrchestrator") as orchestrator_class:
+                orchestrator_class.return_value._run_snapshot_reanalysis.return_value = {"batch_no": "RERUN-test"}
+                result = run_staged_analysis(FakeConfig(temp_dir), "IMP-20260718-120001")
+
+        self.assertEqual(result["batch_no"], "RERUN-test")
+        orchestrator_class.return_value._run_snapshot_reanalysis.assert_called_once()
 
     def test_snapshot_list_api_returns_selectable_metadata(self):
         class FakeConfig:

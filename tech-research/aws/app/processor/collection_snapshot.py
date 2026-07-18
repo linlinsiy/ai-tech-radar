@@ -69,6 +69,7 @@ class CollectionSnapshotStore:
         request: Dict[str, Any],
         source_profiles: Dict[str, Dict[str, Any]],
         articles: Iterable[RawArticle],
+        update_latest: bool = True,
     ) -> str:
         os.makedirs(self.directory, exist_ok=True)
         unique = {}
@@ -85,7 +86,8 @@ class CollectionSnapshotStore:
         }
         batch_path = os.path.join(self.directory, f"{batch_no}.json")
         self._atomic_write(batch_path, payload)
-        self._atomic_write(self.latest_path, payload)
+        if update_latest:
+            self._atomic_write(self.latest_path, payload)
         return os.path.abspath(batch_path)
 
     def load_latest(self) -> Dict[str, Any]:

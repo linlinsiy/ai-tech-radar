@@ -1202,6 +1202,86 @@ class CollectOrchestrator:
 
         return stats
 
+    def import_analysis_results(
+        self,
+        batch_no: str,
+        task_type: str,
+        source_profiles: Dict[str, Dict[str, Any]],
+        l2_results: List[Dict[str, Any]],
+        discarded_l2_results: List[Dict[str, Any]],
+        l3_candidates: List[Dict[str, Any]],
+        l3_results: List[Dict[str, Any]],
+        operation_metrics: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        """Build and submit the shared internal import payload for any L2/L3 run."""
+        for result in l2_results:
+            article = result["article"]
+            if not article.content_hash:
+                article.compute_content_hash(self._content_text(article) or article.url)
+
+        article_items = [{
+            "url": result["article"].url,
+            "url_hash": result["article"].url_hash,
+            "source_code": result["article"].source_code,
+            "title": result["article"].title,
+            "author": result["article"].author,
+            "publish_time": result["article"].publish_time.isoformat() if result["article"].publish_time else None,
+            "crawl_time": result["article"].crawl_time.isoformat(),
+            "raw_summary": result["article"].raw_summary,
+            "full_content": self._content_text(result["article"]),
+            "content_hash": result["article"].content_hash,
+        } for result in l2_results]
+        analysis_items = [{
+            "article_url_hash": result["article"].url_hash,
+            "source_language": result["analysis"].get("source_language", "unknown"),
+            "title_cn": result["analysis"].get("title_cn", result["article"].title),
+            "summary_cn": result["analysis"]["summary_cn"],
+            "category": result["analysis"]["category"],
+            "sub_category": result["analysis"].get("sub_category", ""),
+            "info_type": result["analysis"].get("info_type", ""),
+            "briefing_focus": result["analysis"].get("briefing_focus", ""),
+            "analysis_detail": result["analysis"].get("analysis_detail", {}),
+            "keywords": result["analysis"].get("keywords") if isinstance(result["analysis"].get("keywords"), list) else [],
+            "tech_tags": result["analysis"].get("tech_tags") if isinstance(result["analysis"].get("tech_tags"), list) else [],
+            "companies": result["analysis"].get("companies") if isinstance(result["analysis"].get("companies"), list) else [],
+            "standard_terms": result["analysis"].get("standard_terms", []),
+            "score_tech_depth": result["analysis"]["score_tech_depth"],
+            "score_engineering": result["analysis"]["score_engineering"],
+            "score_org_relevance": result["analysis"]["score_org_relevance"],
+            "score_trend": result["analysis"]["score_trend"],
+            "score_timeliness": result["analysis"]["score_timeliness"],
+            "rank_score": result["analysis"]["rank_score"],
+            "value_score": result["analysis"]["value_score"],
+            "model_name": result["analysis"]["model_name"],
+            "prompt_version": result["analysis"]["prompt_version"],
+        } for result in l2_results]
+        insight_items = [{
+            "article_url_hash": result["article"].url_hash,
+            "technical_background": result["insight"]["technical_background"],
+            "core_problem": result["insight"]["core_problem"],
+            "technical_solution": result["insight"]["technical_solution"],
+            "impact_analysis": result["insight"]["impact_analysis"],
+            "reference_value": result["insight"]["reference_value"],
+            "model_name": result["insight"]["model_name"],
+            "prompt_version": result["insight"]["prompt_version"],
+        } for result in l3_results]
+        reanalysis = task_type == "reanalysis"
+        payload = self.importer.build_payload(
+            batch_no=batch_no,
+            task_type=task_type,
+            source_scope=sorted(source_profiles),
+            articles=article_items,
+            analyses=analysis_items,
+            insights=insight_items,
+            replace_insights_for_analyses=reanalysis,
+            replace_insight_article_url_hashes=(
+                [result["article"].url_hash for result in (l2_results + discarded_l2_results)]
+                if reanalysis else []
+            ),
+            operation_metrics=operation_metrics,
+        )
+        return payload, self.importer.import_batch(payload)
+
     def _run_snapshot_reanalysis(
         self,
         task_type: str,
@@ -1218,6 +1298,7 @@ class CollectOrchestrator:
             else snapshot_store.load_latest()
         )
         snapshot_request = snapshot.get("request") or {}
+        is_collection_snapshot = str(snapshot.get("batch_no") or "").startswith("COL-")
         snapshot_articles = [
             CollectionSnapshotStore.article_from_dict(item)
             for item in snapshot.get("articles", [])
@@ -1244,7 +1325,8 @@ class CollectOrchestrator:
             ),
         )
 
-        batch_no = f"RERUN-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        batch_prefix = "IMP" if is_collection_snapshot else "RERUN"
+        batch_no = f"{batch_prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         batch_time = datetime.now()
         logger.info(
             "====== 采集快照重分析开始: batch_no=%s, snapshot=%s, articles=%d ======",
@@ -1256,11 +1338,14 @@ class CollectOrchestrator:
             articles,
             crawlers={},
             source_profiles=snapshot.get("source_profiles") or {},
-            use_history_cache=False,
-            persist_processed=False,
-            enable_discovery=False,
-            allow_l3_content_fetch=False,
-            replay_snapshot=True,
+            from_date=from_date,
+            to_date=to_date,
+            data_sources=self.config.get_data_sources() if is_collection_snapshot else [],
+            use_history_cache=is_collection_snapshot,
+            persist_processed=is_collection_snapshot,
+            enable_discovery=is_collection_snapshot,
+            allow_l3_content_fetch=is_collection_snapshot,
+            replay_snapshot=not is_collection_snapshot,
             candidate_pool_config=processing_limits["candidate_pool"],
             l3_max_candidates=processing_limits["l3_max_candidates"],
         )
@@ -1332,16 +1417,16 @@ class CollectOrchestrator:
         source_profiles = snapshot.get("source_profiles") or {}
         payload = self.importer.build_payload(
             batch_no=batch_no,
-            task_type="reanalysis",
+            task_type=task_type if is_collection_snapshot else "reanalysis",
             source_scope=sorted(source_profiles),
             articles=article_items,
             analyses=analysis_items,
             insights=insight_items,
-            replace_insights_for_analyses=True,
+            replace_insights_for_analyses=not is_collection_snapshot,
             replace_insight_article_url_hashes=[
                 result["article"].url_hash
                 for result in (l2_results + discarded_l2_results)
-            ],
+            ] if not is_collection_snapshot else [],
             operation_metrics={
                 "batch_time": batch_time.isoformat(),
                 "l1_article_count": len(articles),
@@ -1419,6 +1504,27 @@ class CollectOrchestrator:
             "import": {"status": "success"},
             "stage_stats": analysis_run["stats"],
             "processing_limits": processing_limits,
+        }
+        analysis_snapshot_path = snapshot_store.save(
+            batch_no=batch_no,
+            request={
+                **snapshot_request,
+                "collection_batch_no": snapshot.get("batch_no"),
+                "from_date": from_date,
+                "to_date": to_date,
+                "task_type": task_type,
+                "resolved_collection_period": processing_limits["period"],
+            },
+            source_profiles=source_profiles,
+            articles=[
+                item["article"]
+                for item in (l2_results + discarded_l2_results)
+            ],
+            update_latest=True,
+        )
+        result["analysis_snapshot"] = {
+            "path": analysis_snapshot_path,
+            "article_count": len(l2_results) + len(discarded_l2_results),
         }
         logger.info(
             "====== 采集快照重分析完成: batch_no=%s, l2=%d, l3=%d ======",

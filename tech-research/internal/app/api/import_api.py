@@ -391,13 +391,9 @@ async def handle_import(request: Request, body: ImportRequest):
 
                 if existing_article:
 
-                    # 重分析覆盖同一文章的L2/L3结果时，文章归属同步指向新批次。
-                    # 这样可按最近重分析批次查询当前有效的分析结果。
-                    if (
-                        body.batch.replace_insights_for_analyses
-                        or body.batch.task_type == "reanalysis"
-                    ):
-                        existing_article.import_batch_id = batch.id
+                    # 文章归属始终指向最近一次成功导入或重分析批次，
+                    # 保证批次查询与当前覆盖后的 L2/L3 结果一致。
+                    existing_article.import_batch_id = batch.id
 
                     url_hash_to_article_id[item.url_hash] = existing_article.id
 

@@ -346,52 +346,45 @@ curl -sS -X POST 'http://127.0.0.1:9003/api/v1/jobs/collect' \
 
 ---
 
-### 2.5 `POST /api/v1/validation/collect` -- 分阶段采集验证（HTTP）
+### 2.5 `POST /api/v1/validation/collect` -- 分阶段正式采集（HTTP）
 
 - **协议**：HTTP
 - **端口**：9003
 - **鉴权**：无
-- **功能**：只执行来源采集和文章详情读取，不调用 L2/L3、不导入内部服务、不写入正式去重缓存。采集结果保存到 AWS 本地，供后续单独验证分析阶段。
-- **主逻辑关系**：复用正式任务的 `CollectOrchestrator.collect_stage()`；验证接口仅关闭正式副作用，不维护一套独立爬虫逻辑。
-- **请求体**：除 `strategy` 外，字段与 `POST /api/v1/jobs/collect` 一致。
+- **功能**：只执行正式来源采集和文章详情读取，不调用 L2/L3、不导入内部服务。采集正文、来源记录和审计保存为正式可回放 `COL-*` 快照，供后续单独分析。
+- **主逻辑关系**：复用正式任务的 `CollectOrchestrator.collect_stage()`，使用正式数据源配置与周期容量；不维护独立爬虫逻辑。
+- **请求体**：字段与 `POST /api/v1/jobs/collect` 一致；`collection_period` 可选 `auto/weekly/monthly/quarterly`。
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `strategy` | string | 否 | `primary_resilient` 或 `server_recommended`，默认 `primary_resilient` |
 | `scope` | string | 否 | `all` / `sources` / `timerange`，默认 `all` |
 | `sources` | string | 否 | 逗号分隔的数据源编码；用于缩小验证范围 |
 | `from_date` | string | 否 | 开始日期，格式 `YYYY-MM-DD` |
 | `to_date` | string | 否 | 结束日期，格式 `YYYY-MM-DD` |
 | `task_type` | string | 否 | 任务标识，默认 `manual_backfill` |
+| `collection_period` | string | 否 | `auto` / `weekly` / `monthly` / `quarterly`，默认 `auto` |
 
-- **策略说明**：`server_recommended` 使用服务器探测后给出的站点适配配置；`primary_resilient` 使用当前工程的主采集方式及其降级变体。两种策略均可用相同参数验证同一批来源。
-- **本地结果**：成功后返回 `batch_no` 和 `result_file`，原始文章、来源执行结果、正文可用数量及来源分布保存到 `data/validation/collections/<batch_no>.json`。
+- **本地结果**：成功后返回 `COL-*` 的 `batch_no` 和 `result_file`。原始文章正文和来源配置保存到 `data/analysis_snapshots/<batch_no>.json`，来源审计保存到 `data/collection_audit/<batch_no>.json`。该采集批次尚未写入 MySQL，也不写入已处理去重缓存。
 - **Linux curl 示例**
 
 ```bash
-# 使用当前工程的主/降级采集策略，验证指定来源和时间范围
+# 采集一个月的正式可回放快照，不执行 L2/L3/导入
 curl -sS -X POST 'http://127.0.0.1:9003/api/v1/validation/collect' \
   -H 'Content-Type: application/json' \
-  -d '{"strategy":"primary_resilient","scope":"sources","sources":"36kr-ai,qbitai","from_date":"2026-06-20","to_date":"2026-06-22","task_type":"manual_backfill"}' \
-  | python3 -m json.tool
-
-# 使用服务器探测适配策略，验证全部启用来源
-curl -sS -X POST 'http://127.0.0.1:9003/api/v1/validation/collect' \
-  -H 'Content-Type: application/json' \
-  -d '{"strategy":"server_recommended","scope":"all","task_type":"manual_backfill"}' \
+  -d '{"scope":"all","from_date":"2026-06-18","to_date":"2026-07-18","task_type":"manual_backfill","collection_period":"monthly"}' \
   | python3 -m json.tool
 ```
 
 - **Windows PowerShell 示例**
 
 ```powershell
-# 使用服务器探测适配策略，采集 2026-06-17 至 2026-07-17 的全部启用来源
+# 采集 2026-06-18 至 2026-07-18 的全部启用来源
 $body = @{
-  strategy = 'primary_resilient'
   scope = 'all'
   task_type = 'manual_backfill'
-  from_date = '2026-06-17'
-  to_date = '2026-07-17'
+  from_date = '2026-06-18'
+  to_date = '2026-07-18'
+  collection_period = 'monthly'
 } | ConvertTo-Json
 
 Invoke-RestMethod -Method Post `
@@ -400,41 +393,48 @@ Invoke-RestMethod -Method Post `
   -Body $body | ConvertTo-Json -Depth 10
 ```
 
-- **验证要点**：响应的 `success` 应为 `true`；记录返回的 `data.batch_no`，检查 `data.result_file` 存在，并关注 `article_count`、`content_available_count`、`source_distribution` 和各来源 `status`。该接口不会创建内部导入批次或简报草稿。
+- **验证要点**：响应的 `success` 应为 `true`；记录返回的 `data.batch_no`，检查 `data.result_file` 和对应审计文件存在，并关注 `article_count`、`source_distribution` 和各来源 `status`。该接口不会创建内部导入批次或简报草稿。
 
 ---
 
-### 2.6 `POST /api/v1/validation/analyze` -- 分阶段分析验证（HTTP）
+### 2.6 `POST /api/v1/validation/analyze` -- 分阶段正式分析与导入（HTTP）
 
 - **协议**：HTTP
 - **端口**：9003
 - **鉴权**：无
-- **功能**：读取一次采集验证的本地结果，只执行候选池、L2 和 L3；不重新采集、不调用自动 URL 发现、不写入正式去重缓存、不导入内部服务。
-- **主逻辑关系**：复用正式任务的 `CollectOrchestrator.analyze_stage()`，因此评分、标题语义路由、L3 候选均衡和深度分析规则与正式运行一致。
+- **功能**：读取正式本地快照并执行候选池、L2、L3 和受控导入；不重新采集。传入 `COL-*` 时执行首次 L2/L3 分析；传入完整任务或先前分析生成的 `IMP-*`/`RERUN-*` 时按正式重分析语义重跑 L2/L3。成功后写入 internal/MySQL，并生成或更新正式分析快照。
+- **主逻辑关系**：复用正式任务的 `CollectOrchestrator.analyze_stage()` 和导入客户端，因此评分、标题语义路由、自动发现、L3 排序、失败持久化和导入协议与正式运行一致。
 - **请求体**
 
 ```json
 {
-  "collection_batch_no": "VAL-COL-20260717-101530-123456"
+  "collection_batch_no": "COL-20260718-101530-123456",
+  "from_date": "2026-07-12",
+  "to_date": "2026-07-18",
+  "collection_period": "weekly"
 }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `collection_batch_no` | string | 是 | 上一步采集验证接口返回的 `data.batch_no` |
+| `collection_batch_no` | string | 是 | 可回放快照批次号：首次分析传 `COL-*`；重分析可传正式完整任务或既往分析生成的 `IMP-*`/`RERUN-*` |
+| `from_date` | string | 否 | 仅分析快照中该日期起的文章 |
+| `to_date` | string | 否 | 仅分析快照中该日期止的文章 |
+| `task_type` | string | 否 | 任务标识，默认 `manual_backfill` |
+| `collection_period` | string | 否 | `auto` / `weekly` / `monthly` / `quarterly`，默认 `auto` |
 
-- **本地结果**：分析结果保存到 `data/validation/analyses/<analysis_batch_no>.json`，文件包含 L2 分析、被过滤结果、L3 深度洞察、候选均衡结果和阶段统计。
+- **结果与落地**：成功后返回新的 `IMP-*`（首次分析）或 `RERUN-*`（重分析）批次和导入状态；当前有效 L2/L3 结果写入 internal/MySQL，分析输入快照保存到 `data/analysis_snapshots/<批次号>.json`，审计保存到 `data/collection_audit/<批次号>.json`。导入失败时，完整请求保存到 `data/failed_imports/` 供现有导入接口重试。
 - **Linux curl 示例**
 
 ```bash
-# 将下面的批次号替换为采集验证接口实际返回的 data.batch_no
+# 将下面批次号替换为 2.5 返回的 COL 批次号；此例只分析其中最近一周并导入
 curl -sS -X POST 'http://127.0.0.1:9003/api/v1/validation/analyze' \
   -H 'Content-Type: application/json' \
-  -d '{"collection_batch_no":"VAL-COL-20260717-101530-123456"}' \
+  -d '{"collection_batch_no":"COL-20260718-101530-123456","from_date":"2026-07-12","to_date":"2026-07-18","collection_period":"weekly"}' \
   | python3 -m json.tool
 ```
 
-- **验证要点**：响应中应包含 `analysis_batch_no`、`result_file`、`l2_success`、`l3_selected` 和 `l3_success`。可通过 `l2_source_distribution`、`l2_category_distribution`、`l3_selection` 和 `pipeline_stage_stats` 检查来源均衡、分类覆盖、统一评分门槛及 L3 失败原因。分析验证不创建 MySQL 记录、知识库文件或简报草稿。
+- **验证要点**：响应中应包含 `batch_no`、`collection_batch_no`、`l2_success`、`l3_selected`、`l3_success` 和 `import.status=success`。可通过导入批次、运营过程表及最新批次评分查询核对结果；该接口不创建知识库文件或简报草稿。
 
 ---
 

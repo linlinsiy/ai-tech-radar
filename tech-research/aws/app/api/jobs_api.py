@@ -69,21 +69,23 @@ class CollectJobRequest(BaseModel):
 
 
 class ValidationCollectRequest(CollectJobRequest):
-    """独立采集验证请求；除 strategy 外与正式采集接口参数一致。"""
-
-    strategy: Literal["server_recommended", "primary_resilient"] = Field(
-        default="primary_resilient",
-        description="不可达来源采集策略",
-    )
+    """分阶段正式采集请求；字段与正式 collect 接口一致。"""
 
 
 class ValidationAnalyzeRequest(BaseModel):
-    """对一个本地采集验证批次执行 L2/L3。"""
+    """对正式采集或分析快照执行 L2/L3 并导入。"""
 
     collection_batch_no: str = Field(
-        description="采集验证接口返回的批次号",
+        description="COL-* 采集快照，或 IMP-*/RERUN-* 分析快照批次号",
         min_length=1,
         max_length=128,
+    )
+    from_date: Optional[str] = Field(default=None, description="开始日期 YYYY-MM-DD")
+    to_date: Optional[str] = Field(default=None, description="结束日期 YYYY-MM-DD")
+    task_type: str = Field(default="manual_backfill", description="任务类型")
+    collection_period: Literal["auto", "weekly", "monthly", "quarterly"] = Field(
+        default="auto",
+        description="分析容量档位；auto 时按日期范围或采集批次判断",
     )
 
 
@@ -165,7 +167,7 @@ async def list_analysis_snapshots():
 
 
 async def trigger_validation_collect(request: ValidationCollectRequest):
-    """只执行采集并将原始结果保存到 data/validation/collections。"""
+    """只执行正式采集，保存 COL 快照、审计与正文，不调用 L2/L3/导入。"""
     params_str = json.dumps(request.model_dump(), ensure_ascii=False)
     logger.info("手动触发独立采集验证: %s", params_str)
     try:
@@ -178,7 +180,7 @@ async def trigger_validation_collect(request: ValidationCollectRequest):
 
 
 async def trigger_validation_analysis(request: ValidationAnalyzeRequest):
-    """读取一个本地采集批次，只执行 L2/L3 并保存分析结果。"""
+    """读取 COL 或既有分析快照，执行正式 L2/L3 并调用内部导入接口。"""
     params_str = json.dumps(request.model_dump(), ensure_ascii=False)
     logger.info("手动触发采集批次分析: %s", params_str)
     try:
