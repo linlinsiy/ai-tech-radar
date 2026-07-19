@@ -1212,6 +1212,7 @@ class CollectOrchestrator:
         l3_candidates: List[Dict[str, Any]],
         l3_results: List[Dict[str, Any]],
         operation_metrics: Dict[str, Any],
+        replace_existing_insights: bool = False,
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         """Build and submit the shared internal import payload for any L2/L3 run."""
         for result in l2_results:
@@ -1265,7 +1266,7 @@ class CollectOrchestrator:
             "model_name": result["insight"]["model_name"],
             "prompt_version": result["insight"]["prompt_version"],
         } for result in l3_results]
-        reanalysis = task_type == "reanalysis"
+        reanalysis = task_type == "reanalysis" or replace_existing_insights
         payload = self.importer.build_payload(
             batch_no=batch_no,
             task_type=task_type,
@@ -1425,11 +1426,14 @@ class CollectOrchestrator:
             articles=article_items,
             analyses=analysis_items,
             insights=insight_items,
-            replace_insights_for_analyses=not is_collection_snapshot,
+            # Every explicit snapshot replay replaces its prior L3 decision.
+            # A COL snapshot may have been analyzed earlier with a different
+            # prompt, so stale successful insights must not remain selectable.
+            replace_insights_for_analyses=True,
             replace_insight_article_url_hashes=[
                 result["article"].url_hash
                 for result in (l2_results + discarded_l2_results)
-            ] if not is_collection_snapshot else [],
+            ],
             operation_metrics={
                 "batch_time": batch_time.isoformat(),
                 "l1_article_count": len(articles),

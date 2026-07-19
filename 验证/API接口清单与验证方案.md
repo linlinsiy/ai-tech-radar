@@ -423,7 +423,7 @@ Invoke-RestMethod -Method Post `
 | `task_type` | string | 否 | 任务标识，默认 `manual_backfill` |
 | `collection_period` | string | 否 | `auto` / `weekly` / `monthly` / `quarterly`，默认 `auto` |
 
-- **结果与落地**：成功后返回新的 `IMP-*`（首次分析）或 `RERUN-*`（重分析）批次和导入状态；当前有效 L2/L3 结果写入 internal/MySQL，分析输入快照保存到 `data/analysis_snapshots/<批次号>.json`，审计保存到 `data/collection_audit/<批次号>.json`。导入失败时，完整请求保存到 `data/failed_imports/` 供现有导入接口重试。
+- **结果与落地**：成功后返回新的 `IMP-*`（首次分析）或 `RERUN-*`（重分析）批次和导入状态；当前有效 L2/L3 结果写入 internal/MySQL。显式快照分析会替代这些文章旧的 L3 洞察，未在本轮生成洞察的旧记录标记为 `superseded`，因此批次查询的“是否L3最终入选”反映本轮结果。分析输入快照保存到 `data/analysis_snapshots/<批次号>.json`，审计保存到 `data/collection_audit/<批次号>.json`。导入失败时，完整请求保存到 `data/failed_imports/` 供现有导入接口重试。
 - **Linux curl 示例**
 
 ```bash

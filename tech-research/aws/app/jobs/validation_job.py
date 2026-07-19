@@ -529,7 +529,7 @@ def run_staged_analysis(
     }
     payload, import_result = orchestrator.import_analysis_results(
         batch_no, task_type, source_profiles, l2_results, discarded, l3_candidates,
-        l3_results, operation_metrics,
+        l3_results, operation_metrics, replace_existing_insights=True,
     )
     result = {
         "batch_no": batch_no,

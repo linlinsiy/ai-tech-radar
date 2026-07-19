@@ -700,6 +700,21 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertTrue(payload["batch"]["replace_insights_for_analyses"])
         self.assertEqual(payload["batch"]["replace_insight_article_url_hashes"], ["hash-a"])
 
+    def test_snapshot_analysis_can_replace_insights_without_reanalysis_task_type(self):
+        payload = ImportClient("http://example.com/import").build_payload(
+            batch_no="IMP-20260719-120000",
+            task_type="manual_backfill",
+            source_scope=["source-a"],
+            articles=[],
+            analyses=[],
+            insights=[],
+            replace_insights_for_analyses=True,
+            replace_insight_article_url_hashes=["hash-a"],
+        )
+
+        self.assertEqual(payload["batch"]["task_type"], "manual_backfill")
+        self.assertTrue(payload["batch"]["replace_insights_for_analyses"])
+
     def test_reanalysis_import_failure_persists_retry_payload(self):
         config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
         orchestrator = CollectOrchestrator(AWSConfig(config_dir))
