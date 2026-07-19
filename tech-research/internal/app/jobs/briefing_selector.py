@@ -56,14 +56,16 @@ def _title_terms(title: str) -> Set[str]:
 class BriefingSelector:
     """Aggregate successful L3 material and select the highest-scoring topics.
 
-    The selector never recalculates article value and has no identity-based
-    exceptions. Source and category distributions are observations only.
+    The selector never recalculates article value. It applies only configured
+    upper caps, never minimum quotas or low-score backfilling.
     """
 
     def __init__(self, config: Dict):
         self.config = config
         self.similarity_threshold = float(config.get("topic_similarity_threshold", 0.34))
         self.max_articles_per_topic = int(config.get("max_articles_per_topic", 3))
+        self.max_topics_per_source = int(config.get("max_topics_per_source", 0))
+        self.max_topics_per_info_type = int(config.get("max_topics_per_info_type", 0))
 
     def select(self, articles: List[Dict], briefing_type: str) -> Tuple[List[Dict], Dict]:
         target = int(self.config.get(f"target_{briefing_type}", self.config.get("target_topic", 12)))
@@ -76,14 +78,7 @@ class BriefingSelector:
         ]
         candidates.sort(key=lambda item: item["rank_score"], reverse=True)
         topics = self._cluster(candidates)
-        selected = topics[:target]
-        selected_ids = {topic["topic_id"] for topic in selected}
-        outcomes = {
-            topic["topic_id"]: (
-                "selected" if topic["topic_id"] in selected_ids else "excluded_by_capacity"
-            )
-            for topic in topics
-        }
+        selected, outcomes = self._select_with_upper_caps(topics, target)
 
         selected.sort(key=self._display_order)
         source_counts = Counter(topic["primary"]["source_code"] for topic in selected)
@@ -98,7 +93,9 @@ class BriefingSelector:
             "selected_topics": len(selected),
             "target_topics": target,
             "shortfall_topics": max(0, target - len(selected)),
-            "selection_mode": "rank_only",
+            "selection_mode": "rank_with_upper_caps",
+            "max_topics_per_source": self.max_topics_per_source,
+            "max_topics_per_info_type": self.max_topics_per_info_type,
             "source_counts": dict(source_counts),
             "category_counts": dict(category_counts),
             "info_type_counts": dict(info_type_counts),
@@ -119,6 +116,33 @@ class BriefingSelector:
             ],
         }
         return selected, metadata
+
+    def _select_with_upper_caps(self, topics: List[Dict], target: int) -> Tuple[List[Dict], Dict[str, str]]:
+        """Select in score order; upper caps may leave the report below its target."""
+        selected: List[Dict] = []
+        outcomes: Dict[str, str] = {}
+        source_counts: Counter = Counter()
+        info_type_counts: Counter = Counter()
+
+        for topic in topics:
+            source_code = topic["primary"]["source_code"]
+            info_type = topic["primary"]["info_type"] or "其他"
+            if self.max_topics_per_source > 0 and source_counts[source_code] >= self.max_topics_per_source:
+                outcomes[topic["topic_id"]] = "excluded_by_source_cap"
+                continue
+            if self.max_topics_per_info_type > 0 and info_type_counts[info_type] >= self.max_topics_per_info_type:
+                outcomes[topic["topic_id"]] = "excluded_by_info_type_cap"
+                continue
+            if len(selected) >= target:
+                outcomes[topic["topic_id"]] = "excluded_by_capacity"
+                continue
+
+            selected.append(topic)
+            source_counts[source_code] += 1
+            info_type_counts[info_type] += 1
+            outcomes[topic["topic_id"]] = "selected"
+
+        return selected, outcomes
 
     def _enrich(self, article: Dict) -> Dict:
         enriched = dict(article)

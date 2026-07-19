@@ -192,6 +192,8 @@ class InternalConfig:
             "min_rank_score": self._config.getfloat("DEFAULT", "briefing.selection.min_rank_score", fallback=6.0),
             "topic_similarity_threshold": self._config.getfloat("DEFAULT", "briefing.selection.topic_similarity_threshold", fallback=0.34),
             "max_articles_per_topic": self._config.getint("DEFAULT", "briefing.selection.max_articles_per_topic", fallback=3),
+            "max_topics_per_source": self._config.getint("DEFAULT", "briefing.selection.max_topics_per_source", fallback=3),
+            "max_topics_per_info_type": self._config.getint("DEFAULT", "briefing.selection.max_topics_per_info_type", fallback=5),
         }
 
     @property

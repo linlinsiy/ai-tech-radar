@@ -209,6 +209,17 @@ class CollectionRuleTests(unittest.TestCase):
         )
         self.assertEqual(L2Analyzer._extract_scores({})["org_relevance"], 0.0)
 
+    def test_l2_caps_org_relevance_for_explicit_non_focus_domain(self):
+        article = RawArticle(
+            source_code="source-a",
+            title="Agentic vision with MCP servers",
+            url="https://example.com/vision",
+        )
+
+        cap = L2Analyzer._organization_domain_cap(article, {"tech_tags": ["Agent", "MCP"]})
+
+        self.assertEqual(cap, {"domain": "computer_vision", "max_score": 3.0})
+
     def test_legacy_source_roles_remain_stable_for_import_compatibility(self):
         self.assertEqual(AWSConfig._default_selection_role("academic"), "research")
         self.assertEqual(AWSConfig._default_selection_role("industry_application"), "industry")
@@ -266,6 +277,39 @@ class CollectionRuleTests(unittest.TestCase):
 
         self.assertEqual(result["analysis"]["rank_score"], 8.5)
         self.assertEqual(result["analysis"]["value_score"], 8.5)
+
+    def test_l2_recalculates_rank_after_non_focus_domain_cap(self):
+        parsed = {
+            "title_cn": "视觉 Agent 测试",
+            "summary_cn": "摘要",
+            "category": "Agent与智能体",
+            "sub_category": "视觉智能",
+            "info_type": "工程实践",
+            "analysis_detail": {},
+            "tech_depth": 2,
+            "engineering": 8,
+            "org_relevance": 10,
+            "trend": 9,
+            "tech_tags": ["Agent", "MCP"],
+        }
+        analyzer = L2Analyzer(FakeLLM(parsed), FakePrompts(), deep_analysis_min_score=6.0)
+        article = RawArticle(
+            source_code="official",
+            title="Agentic vision with MCP servers",
+            url="https://official.example/vision",
+            raw_summary="视觉 Agent 技术方案",
+            publish_time=datetime(2026, 7, 15),
+            crawl_time=datetime(2026, 7, 15),
+        )
+
+        result = analyzer._analyze_single(article)
+
+        self.assertEqual(result["analysis"]["score_org_relevance"], 3.0)
+        self.assertEqual(result["analysis"]["rank_score"], 6.05)
+        self.assertEqual(
+            result["analysis"]["analysis_detail"]["org_relevance_guard"]["domain"],
+            "computer_vision",
+        )
 
     def test_title_router_keeps_low_confidence_and_has_no_importance_identity(self):
         llm = FakeLLM({

@@ -18,6 +18,24 @@ from logging_config import get_logger
 logger = get_logger("processor.l2_analysis")
 
 
+# 组织相关性以主领域为准。以下主题即使使用了 Agent、MCP 等技术，仍不是
+# 券商软件研发的核心关注方向；只有 LLM 评分高于上限时才进行校正。
+ORG_RELEVANCE_DOMAIN_CAPS = (
+    ("computer_vision", 3.0, (
+        "computer vision", "agentic vision", "visual intelligence", "vision model", "vision agent",
+        "视觉", "计算机视觉", "图像", "影像", "视频", "多模态视觉",
+    )),
+    ("consumer_device", 3.0, (
+        "consumer electronics", "smartphone", "ai phone", "wearable", "personal device",
+        "消费电子", "智能手机", "ai手机", "可穿戴", "个人终端", "端侧终端",
+    )),
+    ("hardware", 3.0, (
+        "gpu", "cuda", "risc-v", "ai chip", "hardware", "server hardware",
+        "芯片", "算力硬件", "硬件融资", "服务器硬件", "纯gpu",
+    )),
+)
+
+
 class L2Analyzer:
     """
     L2 基础分析器
@@ -171,6 +189,24 @@ class L2Analyzer:
 
         # 组装分析结果
         scores = self._extract_scores(parsed)
+        analysis_detail = self._ensure_dict(parsed.get("analysis_detail"))
+        domain_cap = self._organization_domain_cap(article, parsed)
+        if domain_cap and scores["org_relevance"] > domain_cap["max_score"]:
+            original_score = scores["org_relevance"]
+            scores["org_relevance"] = domain_cap["max_score"]
+            analysis_detail["org_relevance_guard"] = {
+                "domain": domain_cap["domain"],
+                "original_score": original_score,
+                "capped_score": domain_cap["max_score"],
+                "reason": "文章主领域属于非重点方向，组织相关性按领域上限校正",
+            }
+            logger.info(
+                "L2 组织相关性领域上限: url_hash=%s, domain=%s, original=%.1f, capped=%.1f",
+                article.url_hash[:16],
+                domain_cap["domain"],
+                original_score,
+                domain_cap["max_score"],
+            )
         # 时效性由可核验元数据确定，不接受模型猜测值。
         scores["timeliness"] = timeliness
         rank_score = (
@@ -192,7 +228,7 @@ class L2Analyzer:
             "sub_category": str(parsed.get("sub_category") or "").strip(),
             "info_type": str(parsed.get("info_type") or "").strip(),
             "briefing_focus": str(parsed.get("briefing_focus") or "").strip(),
-            "analysis_detail": self._ensure_dict(parsed.get("analysis_detail")),
+            "analysis_detail": analysis_detail,
             "keywords": self._ensure_list(parsed.get("keywords", [])),
             "tech_tags": self._ensure_list(parsed.get("tech_tags", [])),
             "companies": self._ensure_list(parsed.get("companies", [])),
@@ -211,6 +247,21 @@ class L2Analyzer:
         }
 
         return {"article": article, "analysis": analysis}
+
+    @staticmethod
+    def _organization_domain_cap(article: RawArticle, parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Return the applicable organization-relevance cap for an explicit primary domain."""
+        fields = (
+            article.title,
+            parsed.get("category"),
+            parsed.get("sub_category"),
+            " ".join(str(item) for item in parsed.get("tech_tags", []) if item),
+        )
+        text = " ".join(str(value or "") for value in fields).lower()
+        for domain, max_score, terms in ORG_RELEVANCE_DOMAIN_CAPS:
+            if any(term.lower() in text for term in terms):
+                return {"domain": domain, "max_score": max_score}
+        return None
 
     @staticmethod
     def _prepare_input_text(article: RawArticle) -> str:
