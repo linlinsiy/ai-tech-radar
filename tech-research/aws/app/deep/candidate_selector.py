@@ -57,6 +57,21 @@ class L3CandidateSelector:
         self.source_profiles = source_profiles or {}
         self.max_candidates = max(1, int(config.get("max_candidates_per_batch", 50)))
         self.similarity_threshold = float(config.get("topic_similarity_threshold", 0.34))
+        self.topic_trend_boost_enabled = str(
+            config.get("topic_trend_boost_enabled", False)
+        ).lower() == "true"
+        self.topic_trend_boost_min_sources = max(
+            2, int(config.get("topic_trend_boost_min_sources", 2))
+        )
+        self.topic_trend_boost_score = min(
+            10.0, max(0.0, _number(config.get("topic_trend_boost_score"), 10.0))
+        )
+        self.topic_trend_boost_min_org_relevance = _number(
+            config.get("topic_trend_boost_min_org_relevance"), 6.0
+        )
+        self.topic_trend_boost_similarity_threshold = float(
+            config.get("topic_trend_boost_similarity_threshold", self.similarity_threshold)
+        )
 
     def select(
         self,
@@ -64,16 +79,23 @@ class L3CandidateSelector:
         max_candidates: Optional[int] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         outcomes: Dict[str, Dict[str, Any]] = {}
-        eligible = []
+        enriched = []
         for result in l2_results:
-            reason = self._eligibility_reason(result)
             article = result.get("article")
-            url_hash = article.url_hash if article else ""
+            if article is None:
+                continue
+            enriched.append(self._enrich(result))
+
+        topic_trend_boosts = self._apply_topic_trend_boost(enriched)
+        eligible = []
+        for item in enriched:
+            result = item["result"]
+            reason = self._eligibility_reason(result)
+            url_hash = item["topic_id"]
             if reason:
                 if url_hash:
                     outcomes[url_hash] = self._outcome(result, reason)
                 continue
-            item = self._enrich(result)
             eligible.append(item)
             outcomes[url_hash] = self._outcome(result, "eligible")
 
@@ -99,6 +121,7 @@ class L3CandidateSelector:
             "selection_mode": "rank_only",
             "source_counts": dict(source_counts),
             "category_counts": dict(category_counts),
+            "topic_trend_boosts": topic_trend_boosts,
             "article_outcomes": list(outcomes.values()),
             "selected_articles": [
                 {
@@ -108,6 +131,10 @@ class L3CandidateSelector:
                     "title": topic["title"],
                     "rank_score": topic["rank_score"],
                     "related_count": len(topic["member_hashes"]),
+                    "topic_trend_boosted": bool(
+                        topic["result"].get("analysis", {}).get("analysis_detail", {})
+                        .get("topic_trend_boost")
+                    ),
                 }
                 for topic in selected
             ],
@@ -134,7 +161,8 @@ class L3CandidateSelector:
         analysis = result.get("analysis", {})
         article = result["article"]
         title = str(analysis.get("title_cn") or article.title or "")
-        terms = _title_terms(title)
+        title_terms = _title_terms(title)
+        terms = set(title_terms)
         for field in ("keywords", "tech_tags", "companies"):
             terms.update(value.lower() for value in _string_values(analysis.get(field)))
         return {
@@ -145,8 +173,87 @@ class L3CandidateSelector:
             "category": str(analysis.get("category") or "其他AI相关"),
             "rank_score": self._rank_score(analysis),
             "terms": terms,
+            "title_terms": title_terms,
             "member_hashes": [article.url_hash],
         }
+
+    def _apply_topic_trend_boost(
+        self, items: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Promote one eligible representative when independent sources corroborate a topic."""
+        if not self.topic_trend_boost_enabled:
+            return []
+
+        topics: List[Dict[str, Any]] = []
+        for item in sorted(items, key=self._sort_key, reverse=True):
+            matched = next((
+                topic for topic in topics
+                if max(
+                    self._similarity(topic["terms"], item["terms"]),
+                    self._similarity(topic["title_terms"], item["title_terms"]),
+                )
+                >= self.topic_trend_boost_similarity_threshold
+            ), None)
+            if matched:
+                matched["terms"].update(item["terms"])
+                matched["title_terms"].update(item["title_terms"])
+                matched["members"].append(item)
+            else:
+                topics.append({
+                    "terms": set(item["terms"]),
+                    "title_terms": set(item["title_terms"]),
+                    "members": [item],
+                })
+
+        boosts = []
+        for topic in topics:
+            members = topic["members"]
+            source_codes = sorted({item["source_code"] for item in members})
+            if len(source_codes) < self.topic_trend_boost_min_sources:
+                continue
+
+            representative = max(members, key=self._sort_key)
+            analysis = representative["result"].get("analysis", {})
+            if _number(analysis.get("score_org_relevance")) < self.topic_trend_boost_min_org_relevance:
+                continue
+
+            original_trend = _number(analysis.get("score_trend"))
+            if original_trend >= self.topic_trend_boost_score:
+                continue
+
+            analysis["score_trend"] = self.topic_trend_boost_score
+            rank_score = self._calculate_rank_score(analysis)
+            analysis["rank_score"] = rank_score
+            analysis["value_score"] = rank_score
+            detail = analysis.get("analysis_detail")
+            if not isinstance(detail, dict):
+                detail = {}
+                analysis["analysis_detail"] = detail
+            detail["topic_trend_boost"] = {
+                "distinct_source_count": len(source_codes),
+                "source_codes": source_codes,
+                "original_trend_score": original_trend,
+                "trend_score": self.topic_trend_boost_score,
+                "reason": "同一话题被多个独立来源提及，提升趋势重要性",
+            }
+            representative["rank_score"] = rank_score
+            boosts.append({
+                "representative_url_hash": representative["topic_id"],
+                "representative_title": representative["title"],
+                "distinct_source_count": len(source_codes),
+                "source_codes": source_codes,
+                "original_trend_score": original_trend,
+                "trend_score": self.topic_trend_boost_score,
+                "rank_score": rank_score,
+            })
+
+        if boosts:
+            logger.info(
+                "L3 跨来源话题趋势提升完成: topics=%d, representatives=%d",
+                len(topics),
+                len(boosts),
+            )
+        return boosts
 
     def _cluster(
         self,
@@ -190,6 +297,17 @@ class L3CandidateSelector:
         if rank_score is None:
             rank_score = analysis.get("value_score")
         return _number(rank_score)
+
+    @staticmethod
+    def _calculate_rank_score(analysis: Dict[str, Any]) -> float:
+        return round(
+            _number(analysis.get("score_org_relevance")) * 0.35
+            + _number(analysis.get("score_trend")) * 0.30
+            + _number(analysis.get("score_engineering")) * 0.20
+            + _number(analysis.get("score_tech_depth")) * 0.10
+            + _number(analysis.get("score_timeliness")) * 0.05,
+            2,
+        )
 
     @staticmethod
     def _similarity(left: Set[str], right: Set[str]) -> float:

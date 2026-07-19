@@ -168,6 +168,27 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=181), crawled), 0.0)
         self.assertEqual(L2Analyzer._timeliness_score(None, crawled), 0.0)
 
+    def test_explicit_date_filter_excludes_undated_articles(self):
+        articles = [
+            RawArticle(
+                source_code="source-a", title="范围内", url="https://example.com/in",
+                publish_time=datetime(2026, 7, 15),
+            ),
+            RawArticle(
+                source_code="source-a", title="范围外", url="https://example.com/out",
+                publish_time=datetime(2026, 7, 1),
+            ),
+            RawArticle(
+                source_code="source-a", title="无发布时间", url="https://example.com/unknown",
+            ),
+        ]
+
+        filtered = CollectOrchestrator._filter_by_date(
+            articles, "2026-07-12", "2026-07-18"
+        )
+
+        self.assertEqual([article.title for article in filtered], ["范围内"])
+
     def test_l2_accepts_zero_scores_and_normalizes_org_relevance_anchor(self):
         scores = L2Analyzer._extract_scores({
             "score_org_relevance": 7,
@@ -1119,6 +1140,37 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(metadata["topics"], 1)
         self.assertEqual(metadata["selected_articles"][0]["related_count"], 2)
+
+    def test_l3_topic_trend_boost_promotes_two_source_topic_before_threshold(self):
+        selector = L3CandidateSelector({
+            "max_candidates_per_batch": 4,
+            "topic_similarity_threshold": 0.8,
+            "topic_trend_boost_enabled": True,
+            "topic_trend_boost_min_sources": 2,
+            "topic_trend_boost_score": 10,
+            "topic_trend_boost_min_org_relevance": 6,
+            "topic_trend_boost_similarity_threshold": 0.8,
+        }, min_score=6.0)
+        results = [
+            self._l2_result("source-a", 1, title="Kimi K3 正式发布", score=5.8, trend=7.0),
+            self._l2_result("source-b", 1, title="Kimi K3 正式发布", score=5.7, trend=7.0),
+        ]
+        for result in results:
+            result["analysis"].update({
+                "score_org_relevance": 7.0,
+                "score_engineering": 2.0,
+                "score_tech_depth": 2.0,
+                "score_timeliness": 8.0,
+                "rank_score": 5.8,
+                "value_score": 5.8,
+            })
+
+        selected, metadata = selector.select(results)
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["analysis"]["score_trend"], 10.0)
+        self.assertEqual(selected[0]["analysis"]["rank_score"], 6.45)
+        self.assertEqual(metadata["topic_trend_boosts"][0]["distinct_source_count"], 2)
 
     def test_l3_high_score_releases_are_not_replaced_for_source_diversity(self):
         selector = L3CandidateSelector({

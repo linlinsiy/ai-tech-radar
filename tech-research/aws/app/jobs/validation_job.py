@@ -476,8 +476,23 @@ def run_staged_analysis(
             to_date=to_date,
         )
     request = snapshot.get("request") or {}
-    articles = [CollectionSnapshotStore.article_from_dict(item) for item in snapshot.get("articles", [])]
-    articles = CollectOrchestrator._filter_by_date(articles, from_date, to_date)
+    snapshot_articles = [
+        CollectionSnapshotStore.article_from_dict(item)
+        for item in snapshot.get("articles", [])
+    ]
+    articles = CollectOrchestrator._filter_by_date(snapshot_articles, from_date, to_date)
+    explicit_range = bool(from_date or to_date)
+    undated_excluded = sum(
+        1 for article in snapshot_articles
+        if article.publish_time is None
+    ) if explicit_range else 0
+    date_filter = {
+        "input": len(snapshot_articles),
+        "in_range": len(articles),
+        "excluded_out_of_range": len(snapshot_articles) - len(articles) - undated_excluded,
+        "excluded_undated": undated_excluded,
+        "explicit_range": explicit_range,
+    }
     if not articles:
         raise ValueError("指定采集批次在所选时间范围内不包含可分析文章")
     effective_from = from_date or request.get("from_date")
@@ -525,7 +540,7 @@ def run_staged_analysis(
         "l3_source_distribution": dict(Counter(item["article"].source_code for item in l3_candidates)),
         "l3_category_distribution": dict(Counter(item["analysis"].get("category") or "其他AI相关" for item in l3_candidates)),
         "stage_detail": {**analysis_run["stats"], "collection_batch_no": collection_batch_no,
-                         "processing_limits": limits},
+                         "processing_limits": limits, "date_filter": date_filter},
     }
     payload, import_result = orchestrator.import_analysis_results(
         batch_no, task_type, source_profiles, l2_results, discarded, l3_candidates,
@@ -536,6 +551,7 @@ def run_staged_analysis(
         "collection_batch_no": collection_batch_no,
         "collection_article_count": len(snapshot.get("articles", [])),
         "analysis_article_count": len(articles),
+        "date_filter": date_filter,
         "from_date": from_date,
         "to_date": to_date,
         "l2_success": len(l2_results),

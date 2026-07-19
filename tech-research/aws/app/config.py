@@ -290,6 +290,21 @@ class AWSConfig:
             "topic_similarity_threshold": self.get_float(
                 "l3_selection.topic_similarity_threshold", 0.34
             ),
+            "topic_trend_boost_enabled": self.get(
+                option="l3_selection.topic_trend_boost_enabled", fallback="true"
+            ).lower() == "true",
+            "topic_trend_boost_min_sources": self.get_int(
+                "l3_selection.topic_trend_boost_min_sources", 2
+            ),
+            "topic_trend_boost_score": self.get_float(
+                "l3_selection.topic_trend_boost_score", 10.0
+            ),
+            "topic_trend_boost_min_org_relevance": self.get_float(
+                "l3_selection.topic_trend_boost_min_org_relevance", 6.0
+            ),
+            "topic_trend_boost_similarity_threshold": self.get_float(
+                "l3_selection.topic_trend_boost_similarity_threshold", 0.34
+            ),
         }
 
     # === 日志配置 ===

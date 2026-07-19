@@ -292,7 +292,10 @@ class CollectOrchestrator:
         filtered = []
         for article in articles:
             published = article.publish_time.replace(tzinfo=None) if article.publish_time else None
-            if published is None or (
+            # A date-bounded replay must not silently treat undated content as
+            # belonging to every requested period. Without an explicit range,
+            # keep undated entries for normal latest-content collection.
+            if published is not None and (
                 (start is None or published >= start)
                 and (end is None or published <= end)
             ):
