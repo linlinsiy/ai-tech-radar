@@ -504,13 +504,16 @@ async def handle_import(request: Request, body: ImportRequest):
             try:
 
                 rank_score = item.rank_score if item.rank_score is not None else item.value_score
+                analysis_detail = dict(item.analysis_detail or {})
+                if item.title_cn and item.title_cn.strip():
+                    analysis_detail["title_cn"] = item.title_cn.strip()
                 analysis_values = {
                     "summary_cn": item.summary_cn,
                     "category": item.category,
                     "sub_category": item.sub_category,
                     "info_type": item.info_type,
                     "briefing_focus": item.briefing_focus,
-                    "analysis_detail": item.analysis_detail,
+                    "analysis_detail": analysis_detail or None,
                     "keywords": ",".join(item.keywords) if item.keywords else None,
                     "tech_tags": item.tech_tags or None,
                     "companies": item.companies or None,

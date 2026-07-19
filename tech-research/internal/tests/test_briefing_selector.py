@@ -9,6 +9,8 @@ sys.path.insert(0, APP_DIR)
 
 from jobs.briefing_render import (
     assemble_briefing,
+    build_information_overview,
+    build_signal_index,
     topic_marker,
     validate_briefing,
     validate_section,
@@ -135,6 +137,21 @@ class BriefingSelectorTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 1)
         self.assertEqual(len(selected[0]["articles"]), 2)
+
+    def test_l4_uses_l2_chinese_title_for_overview_and_signal_index(self):
+        candidate = article(1, "source-a", "Agent与智能体", "工程实践", title="Build an agent gateway")
+        candidate["title_cn"] = "构建智能体网关"
+        candidate["original_title"] = candidate["title"]
+        candidate["title"] = candidate["title_cn"]
+
+        selected, _ = BriefingSelector({**self.config, "target_weekly": 1}).select([candidate], "weekly")
+        overview = build_information_overview(selected)
+        index = build_signal_index(selected)
+
+        self.assertEqual(selected[0]["title"], "构建智能体网关")
+        self.assertIn("构建智能体网关", overview)
+        self.assertIn("构建智能体网关", index)
+        self.assertEqual(selected[0]["primary"]["original_title"], "Build an agent gateway")
 
     def test_qualified_topics_do_not_expand_report_target(self):
         candidates = [

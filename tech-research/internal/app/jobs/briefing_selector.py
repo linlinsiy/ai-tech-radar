@@ -196,7 +196,8 @@ class BriefingSelector:
 
     @staticmethod
     def _terms(article: Dict) -> Set[str]:
-        terms = _title_terms(article.get("title", ""))
+        # 展示使用 L2 中文标题，聚合仍以原始标题保留英文技术词和事件实体。
+        terms = _title_terms(article.get("original_title") or article.get("title", ""))
         for field in ("keywords", "tech_tags", "companies"):
             terms.update(value.lower() for value in _string_values(article.get(field)))
         return {term for term in terms if term}

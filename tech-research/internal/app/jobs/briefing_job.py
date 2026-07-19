@@ -46,9 +46,12 @@ def _query_articles(session, start_date: datetime, end_date: datetime) -> List[D
         rank_score = analysis.rank_score
         if rank_score is None:
             rank_score = analysis.value_score
+        analysis_detail = analysis.analysis_detail if isinstance(analysis.analysis_detail, dict) else {}
+        title_cn = str(analysis_detail.get("title_cn") or "").strip()
         result.append({
             "id": article.id,
-            "title": article.title,
+            "title": title_cn or article.title,
+            "original_title": article.title,
             "url": article.url,
             "publish_time": article.publish_time,
             "source_code": source.source_code,
@@ -147,6 +150,12 @@ def _format_topic_material(topic: Dict) -> str:
         article_blocks.append(
             f"来源：{article['source_name']}｜{published}｜{article['info_type']}\n"
             f"标题：{article['title']}\n"
+            + (
+                f"原始标题：{article['original_title']}\n"
+                if article.get("original_title") and article["original_title"] != article["title"]
+                else ""
+            )
+            +
             f"L2摘要：{article['summary_cn'][:600]}\n"
             f"简报重点：{article.get('briefing_focus') or article['summary_cn'][:250]}\n"
             f"L3背景：{article['technical_background'][:500]}\n"
