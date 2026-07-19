@@ -1172,6 +1172,38 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(selected[0]["analysis"]["rank_score"], 6.45)
         self.assertEqual(metadata["topic_trend_boosts"][0]["distinct_source_count"], 2)
 
+    def test_l3_topic_trend_boost_skips_repeated_opinion_articles(self):
+        selector = L3CandidateSelector({
+            "max_candidates_per_batch": 4,
+            "topic_trend_boost_enabled": True,
+            "topic_trend_boost_min_sources": 2,
+            "topic_trend_boost_score": 10,
+            "topic_trend_boost_min_org_relevance": 6,
+            "topic_trend_boost_similarity_threshold": 0.8,
+        }, min_score=6.0)
+        results = [
+            self._l2_result(
+                "source-a", 1, title="AI 编码争议", info_type="人物观点", score=5.8, trend=7.0,
+            ),
+            self._l2_result(
+                "source-b", 1, title="AI 编码争议", info_type="人物观点", score=5.7, trend=7.0,
+            ),
+        ]
+        for result in results:
+            result["analysis"].update({
+                "score_org_relevance": 7.0,
+                "score_engineering": 2.0,
+                "score_tech_depth": 2.0,
+                "score_timeliness": 8.0,
+                "rank_score": 5.8,
+                "value_score": 5.8,
+            })
+
+        selected, metadata = selector.select(results)
+
+        self.assertEqual(selected, [])
+        self.assertEqual(metadata["topic_trend_boosts"], [])
+
     def test_l3_high_score_releases_are_not_replaced_for_source_diversity(self):
         selector = L3CandidateSelector({
             "max_candidates_per_batch": 3,

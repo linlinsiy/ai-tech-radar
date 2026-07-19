@@ -214,6 +214,8 @@ class L3CandidateSelector:
 
             representative = max(members, key=self._sort_key)
             analysis = representative["result"].get("analysis", {})
+            if not self._is_hard_event(analysis):
+                continue
             if _number(analysis.get("score_org_relevance")) < self.topic_trend_boost_min_org_relevance:
                 continue
 
@@ -308,6 +310,13 @@ class L3CandidateSelector:
             + _number(analysis.get("score_timeliness")) * 0.05,
             2,
         )
+
+    @staticmethod
+    def _is_hard_event(analysis: Dict[str, Any]) -> bool:
+        """Opinions and commentary cannot become hard events through re-reporting."""
+        info_type = str(analysis.get("info_type") or "").lower()
+        opinion_terms = ("观点", "评论", "访谈", "人物言论", "争议", "社论", "解读")
+        return not any(term in info_type for term in opinion_terms)
 
     @staticmethod
     def _similarity(left: Set[str], right: Set[str]) -> float:
