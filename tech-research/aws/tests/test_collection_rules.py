@@ -169,7 +169,7 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(L2Analyzer._timeliness_score(crawled - timedelta(days=181), crawled), 0.0)
         self.assertEqual(L2Analyzer._timeliness_score(None, crawled), 0.0)
 
-    def test_explicit_date_filter_excludes_undated_articles(self):
+    def test_list_date_filter_keeps_undated_articles_for_detail_hydration(self):
         articles = [
             RawArticle(
                 source_code="source-a", title="范围内", url="https://example.com/in",
@@ -188,7 +188,30 @@ class CollectionRuleTests(unittest.TestCase):
             articles, "2026-07-12", "2026-07-18"
         )
 
+        self.assertEqual([article.title for article in filtered], ["范围内", "无发布时间"])
+
+    def test_hydrated_date_filter_excludes_unresolved_and_out_of_range_articles(self):
+        articles = [
+            RawArticle(
+                source_code="source-a", title="范围内", url="https://example.com/in",
+                publish_time=datetime(2026, 7, 15),
+            ),
+            RawArticle(
+                source_code="source-a", title="范围外", url="https://example.com/out",
+                publish_time=datetime(2026, 7, 1),
+            ),
+            RawArticle(
+                source_code="source-a", title="无发布时间", url="https://example.com/unknown",
+            ),
+        ]
+
+        filtered, stats = CollectOrchestrator._filter_hydrated_by_date(
+            articles, "2026-07-12", "2026-07-18"
+        )
+
         self.assertEqual([article.title for article in filtered], ["范围内"])
+        self.assertEqual(stats["date_out_of_range"], 1)
+        self.assertEqual(stats["date_unresolved"], 1)
 
     def test_l2_accepts_zero_scores_and_normalizes_org_relevance_anchor(self):
         scores = L2Analyzer._extract_scores({

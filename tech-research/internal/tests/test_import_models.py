@@ -52,6 +52,14 @@ class ImportModelTests(unittest.TestCase):
             "existing_article.import_batch_id = batch.id",
             source,
         )
+        self.assertIn(
+            "existing_article.publish_time is None",
+            source,
+        )
+        self.assertIn(
+            "metadata_backfilled.append(\"publish_time\")",
+            source,
+        )
 
     def test_import_truncates_oversized_raw_summary_and_uses_savepoint(self):
         source = self._import_api_source()

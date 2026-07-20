@@ -237,10 +237,16 @@ class CollectOrchestrator:
         candidates: List[RawArticle],
         crawlers: Dict[str, Any],
         batch_content_hashes: set,
+        from_date: str = None,
+        to_date: str = None,
         use_history_cache: bool = True,
         persist_processed: bool = True,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
         hydrated = self._hydrate_candidates(candidates, crawlers)
+        hydrated_count = len(hydrated)
+        hydrated, date_stats = self._filter_hydrated_by_date(
+            hydrated, from_date, to_date
+        )
         prepared, quality_stats = self._prepare_for_l2(
             hydrated,
             batch_content_hashes,
@@ -255,10 +261,11 @@ class CollectOrchestrator:
             self.dedup.mark_processed_batch([result["article"] for result in results])
         return results, {
             "selected": len(candidates),
-            "hydrated": len(hydrated),
+            "hydrated": hydrated_count,
             "scored": len(prepared),
             "success": len(results),
             "failed": len(prepared) - len(results),
+            **date_stats,
             **quality_stats,
         }
 
@@ -292,15 +299,46 @@ class CollectOrchestrator:
         filtered = []
         for article in articles:
             published = article.publish_time.replace(tzinfo=None) if article.publish_time else None
-            # A date-bounded replay must not silently treat undated content as
-            # belonging to every requested period. Without an explicit range,
-            # keep undated entries for normal latest-content collection.
-            if published is not None and (
+            # List pages often omit dates. Preserve those candidates until the
+            # detail page has been fetched and its metadata can be inspected.
+            if published is None or (
                 (start is None or published >= start)
                 and (end is None or published <= end)
             ):
                 filtered.append(article)
         return filtered
+
+    @staticmethod
+    def _filter_hydrated_by_date(
+        articles: List[RawArticle],
+        from_date: str = None,
+        to_date: str = None,
+    ) -> Tuple[List[RawArticle], Dict[str, int]]:
+        """Apply the requested date range after detail-page metadata is available."""
+        if not from_date and not to_date:
+            return articles, {"date_out_of_range": 0, "date_unresolved": 0}
+
+        start = datetime.fromisoformat(from_date) if from_date else None
+        end = datetime.fromisoformat(to_date) if to_date else None
+        if end:
+            end = end.replace(hour=23, minute=59, second=59)
+
+        filtered = []
+        out_of_range = 0
+        unresolved = 0
+        for article in articles:
+            published = article.publish_time.replace(tzinfo=None) if article.publish_time else None
+            if published is None:
+                unresolved += 1
+                continue
+            if (start is None or published >= start) and (end is None or published <= end):
+                filtered.append(article)
+            else:
+                out_of_range += 1
+        return filtered, {
+            "date_out_of_range": out_of_range,
+            "date_unresolved": unresolved,
+        }
 
     def collect_stage(
         self,
@@ -387,6 +425,10 @@ class CollectOrchestrator:
                             hydrated_by_hash.get(article.url_hash, article)
                             for article in candidates
                         ]
+                        selected_articles, date_stats = self._filter_hydrated_by_date(
+                            selected_articles, from_date, to_date
+                        )
+                        attempt.update(date_stats)
                     else:
                         selected_articles = candidates
 
@@ -395,7 +437,7 @@ class CollectOrchestrator:
                     attempt["effective_url"] = crawler.last_effective_url
                     attempt["error"] = (crawler.last_error or "")[:500]
                     attempt["diagnostics"] = dict(crawler.collection_diagnostics)
-                    if len(candidates) < minimum_candidates:
+                    if len(selected_articles) < minimum_candidates:
                         attempt["status"] = "underfilled"
                         partial = (selected_articles, runtime, crawler)
                         if best_partial is None or len(selected_articles) > len(best_partial[0]):
@@ -404,7 +446,7 @@ class CollectOrchestrator:
                         logger.info(
                             "[%s] 候选数不足最低要求，继续尝试后备采集方式: %d/%d, variant=%s",
                             plan["source_code"],
-                            len(candidates),
+                            len(selected_articles),
                             minimum_candidates,
                             attempt["variant"],
                         )
@@ -582,6 +624,8 @@ class CollectOrchestrator:
                 "failed": 0,
                 "discarded": 0,
                 "content_insufficient": 0,
+                "date_out_of_range": 0,
+                "date_unresolved": 0,
                 "initial": {},
                 "refill": {},
             },
@@ -664,11 +708,16 @@ class CollectOrchestrator:
             initial_candidates,
             crawlers,
             batch_content_hashes,
+            from_date=from_date,
+            to_date=to_date,
             use_history_cache=use_history_cache,
             persist_processed=persist_processed,
         )
         stage_stats["L2_analysis"]["initial"] = initial_stats
-        for key in ("scored", "success", "failed", "content_insufficient"):
+        for key in (
+            "scored", "success", "failed", "content_insufficient",
+            "date_out_of_range", "date_unresolved",
+        ):
             target = "total" if key == "scored" else key
             stage_stats["L2_analysis"][target] += initial_stats[key]
         stage_stats["L1_dedup"]["content_duplicates"] += initial_stats[
@@ -687,6 +736,8 @@ class CollectOrchestrator:
                 refill_candidates,
                 crawlers,
                 batch_content_hashes,
+                from_date=from_date,
+                to_date=to_date,
                 use_history_cache=use_history_cache,
                 persist_processed=persist_processed,
             )
@@ -700,9 +751,14 @@ class CollectOrchestrator:
                 "failed": 0,
                 "content_insufficient": 0,
                 "content_duplicates": 0,
+                "date_out_of_range": 0,
+                "date_unresolved": 0,
             }
         stage_stats["L2_analysis"]["refill"] = refill_stats
-        for key in ("scored", "success", "failed", "content_insufficient"):
+        for key in (
+            "scored", "success", "failed", "content_insufficient",
+            "date_out_of_range", "date_unresolved",
+        ):
             target = "total" if key == "scored" else key
             stage_stats["L2_analysis"][target] += refill_stats[key]
         stage_stats["L1_dedup"]["content_duplicates"] += refill_stats[

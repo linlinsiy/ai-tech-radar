@@ -409,6 +409,20 @@ async def handle_import(request: Request, body: ImportRequest):
                     # 文章归属始终指向最近一次成功导入或重分析批次，
                     # 保证批次查询与当前覆盖后的 L2/L3 结果一致。
                     existing_article.import_batch_id = batch.id
+                    incoming_publish_time = _parse_iso(item.publish_time)
+                    metadata_backfilled = []
+                    if (
+                        existing_article.publish_time is None
+                        and incoming_publish_time is not None
+                    ):
+                        existing_article.publish_time = incoming_publish_time
+                        metadata_backfilled.append("publish_time")
+                    if existing_article.crawl_time is None and item.crawl_time:
+                        existing_article.crawl_time = _parse_iso(item.crawl_time)
+                        metadata_backfilled.append("crawl_time")
+                    if not existing_article.author and item.author:
+                        existing_article.author = item.author
+                        metadata_backfilled.append("author")
 
                     url_hash_to_article_id[item.url_hash] = existing_article.id
 
@@ -419,6 +433,8 @@ async def handle_import(request: Request, body: ImportRequest):
                         "mysql_id": existing_article.id,
 
                         "status": "duplicate_skipped",
+
+                        "metadata_backfilled": metadata_backfilled,
 
                     })
 
