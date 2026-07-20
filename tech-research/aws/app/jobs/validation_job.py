@@ -11,6 +11,7 @@ from config import AWSConfig
 from crawler.base import RawArticle
 from crawler.source_strategies import (
     CONFIGURED,
+    PRIMARY_RESILIENT,
     SERVER_RECOMMENDED,
     match_server_coverage_aliases,
 )
@@ -395,6 +396,7 @@ def run_staged_collection(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     task_type: str = "manual_backfill",
+    strategy: str = PRIMARY_RESILIENT,
     collection_period: str = "auto",
 ) -> Dict[str, Any]:
     """Formal collection phase: capture hydrated source data without L2/L3/import."""
@@ -403,7 +405,7 @@ def run_staged_collection(
     orchestrator = CollectOrchestrator(config, initialize_analysis=False)
     audit = CollectionAudit(config.data_dir, batch_no)
     collection = orchestrator.collect_stage(
-        strategy=CONFIGURED,
+        strategy=strategy,
         sources=sources,
         from_date=from_date,
         to_date=to_date,
@@ -421,6 +423,7 @@ def run_staged_collection(
             "from_date": from_date,
             "to_date": to_date,
             "task_type": task_type,
+            "strategy": strategy,
             "collection_period": collection_period,
             "resolved_collection_period": limits["period"],
         },
@@ -431,6 +434,7 @@ def run_staged_collection(
     stats = {
         "batch_no": batch_no,
         "scope": scope,
+        "strategy": strategy,
         "L0_collect": {
             "total": len(collection["articles"]),
             "sources": collection["source_count"],
@@ -606,6 +610,7 @@ def handle_validation_collect(params: Any = None) -> Dict[str, Any]:
         from_date=parsed.get("from_date") or parsed.get("from"),
         to_date=parsed.get("to_date") or parsed.get("to"),
         task_type=parsed.get("task_type", "manual_backfill"),
+        strategy=parsed.get("strategy", PRIMARY_RESILIENT),
         collection_period=parsed.get("collection_period", "auto"),
     )
 

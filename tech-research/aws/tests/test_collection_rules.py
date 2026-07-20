@@ -1,6 +1,7 @@
 import os
 import sys
 import asyncio
+import json
 import threading
 import tempfile
 import unittest
@@ -555,19 +556,24 @@ class CollectionRuleTests(unittest.TestCase):
 
     def test_http_collect_runs_sync_job_outside_event_loop_thread(self):
         event_loop_thread = threading.get_ident()
+        received = {}
 
-        def fake_collect(_params):
+        def fake_collect(params):
+            received.update(json.loads(params))
             return {"worker_thread": threading.get_ident()}
 
         with patch("jobs.collect_job.handle_collect_job", side_effect=fake_collect):
             response = asyncio.run(trigger_collect(CollectJobRequest()))
 
         self.assertNotEqual(response["data"]["worker_thread"], event_loop_thread)
+        self.assertEqual(received["strategy"], PRIMARY_RESILIENT)
 
     def test_validation_endpoints_run_sync_jobs_outside_event_loop_thread(self):
         event_loop_thread = threading.get_ident()
+        received = {}
 
-        def fake_job(_params):
+        def fake_job(params):
+            received.update(json.loads(params))
             return {"worker_thread": threading.get_ident()}
 
         with patch("jobs.validation_job.handle_validation_collect", side_effect=fake_job):
@@ -581,6 +587,7 @@ class CollectionRuleTests(unittest.TestCase):
 
         self.assertNotEqual(collect_response["data"]["worker_thread"], event_loop_thread)
         self.assertNotEqual(analysis_response["data"]["worker_thread"], event_loop_thread)
+        self.assertEqual(received["strategy"], PRIMARY_RESILIENT)
 
     def test_validation_source_strategies_keep_their_distinct_behavior(self):
         config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
@@ -1023,7 +1030,7 @@ class CollectionRuleTests(unittest.TestCase):
         config_dir = os.path.abspath(os.path.join(APP_DIR, "..", "config"))
         orchestrator = CollectOrchestrator(AWSConfig(config_dir))
         collection_result = {
-            "strategy": "configured",
+            "strategy": PRIMARY_RESILIENT,
             "articles": [],
             "crawlers": {},
             "source_profiles": {},
@@ -1060,7 +1067,9 @@ class CollectionRuleTests(unittest.TestCase):
             result = orchestrator.run(task_type="manual_backfill")
 
         self.assertEqual(result["import"]["status"], "success")
-        self.assertEqual(collect_stage.call_args.kwargs["strategy"], "configured")
+        self.assertEqual(
+            collect_stage.call_args.kwargs["strategy"], PRIMARY_RESILIENT
+        )
         _, kwargs = analyze_stage.call_args
         self.assertTrue(kwargs["use_history_cache"])
         self.assertTrue(kwargs["persist_processed"])

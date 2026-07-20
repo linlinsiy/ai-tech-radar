@@ -304,7 +304,8 @@ curl http://localhost:9003/health | python -m json.tool
   "sources": "xin-zhi-yuan,aws-ml-blog",
   "from_date": "2026-06-20",
   "to_date": "2026-06-22",
-  "task_type": "manual_backfill"
+  "task_type": "manual_backfill",
+  "strategy": "primary_resilient"
 }
 ```
 
@@ -317,6 +318,7 @@ curl http://localhost:9003/health | python -m json.tool
 | `from_date` | string | 否 | 开始日期 YYYY-MM-DD，限定文章发布时间范围 |
 | `to_date` | string | 否 | 结束日期 YYYY-MM-DD |
 | `task_type` | string | 否 | scheduled / manual_backfill，默认 manual_backfill |
+| `strategy` | string | 否 | `primary_resilient`（默认）/ `configured` / `server_recommended`；`primary_resilient` 会按配置的官方源与备用变体依次尝试 |
 
 - **与 XXL-Job 版本的差异**：XXL-Job `sources` 为 JSON 数组 `["a","b"]`，HTTP 版为逗号分隔字符串 `"a,b"`；XXL-Job 日期字段为 `from`/`to`，HTTP 版为 `from_date`/`to_date`
 - **验证方式**
@@ -336,12 +338,12 @@ Invoke-RestMethod -Method Post -Uri "http://localhost:9003/api/v1/jobs/collect" 
 # 全量采集
 curl -sS -X POST 'http://127.0.0.1:9003/api/v1/jobs/collect' \
   -H 'Content-Type: application/json' \
-  -d '{"scope":"all","task_type":"manual_backfill"}' | python3 -m json.tool
+  -d '{"scope":"all","task_type":"manual_backfill","strategy":"primary_resilient"}' | python3 -m json.tool
 
 # 指定源 + 时间范围
 curl -sS -X POST 'http://127.0.0.1:9003/api/v1/jobs/collect' \
   -H 'Content-Type: application/json' \
-  -d '{"scope":"all","sources":"aws-ml-blog,arxiv-cs-ai","from_date":"2026-06-20","to_date":"2026-06-22","task_type":"manual_backfill"}' | python3 -m json.tool
+  -d '{"scope":"all","sources":"aws-ml-blog,arxiv-cs-ai","from_date":"2026-06-20","to_date":"2026-06-22","task_type":"manual_backfill","strategy":"primary_resilient"}' | python3 -m json.tool
 ```
 
 ---
@@ -362,6 +364,7 @@ curl -sS -X POST 'http://127.0.0.1:9003/api/v1/jobs/collect' \
 | `from_date` | string | 否 | 开始日期，格式 `YYYY-MM-DD` |
 | `to_date` | string | 否 | 结束日期，格式 `YYYY-MM-DD` |
 | `task_type` | string | 否 | 任务标识，默认 `manual_backfill` |
+| `strategy` | string | 否 | `primary_resilient`（默认）/ `configured` / `server_recommended`；正式与分阶段采集均使用该策略 |
 | `collection_period` | string | 否 | `auto` / `weekly` / `monthly` / `quarterly`，默认 `auto` |
 
 - **本地结果**：成功后返回 `COL-*` 的 `batch_no` 和 `result_file`。原始文章正文和来源配置保存到 `data/analysis_snapshots/<batch_no>.json`，来源审计保存到 `data/collection_audit/<batch_no>.json`。该采集批次尚未写入 MySQL，也不写入已处理去重缓存。
@@ -371,7 +374,7 @@ curl -sS -X POST 'http://127.0.0.1:9003/api/v1/jobs/collect' \
 # 采集一个月的正式可回放快照，不执行 L2/L3/导入
 curl -sS -X POST 'http://127.0.0.1:9003/api/v1/validation/collect' \
   -H 'Content-Type: application/json' \
-  -d '{"scope":"all","from_date":"2026-06-18","to_date":"2026-07-18","task_type":"manual_backfill","collection_period":"monthly"}' \
+  -d '{"scope":"all","from_date":"2026-06-18","to_date":"2026-07-18","task_type":"manual_backfill","strategy":"primary_resilient","collection_period":"monthly"}' \
   | python3 -m json.tool
 ```
 
@@ -382,6 +385,7 @@ curl -sS -X POST 'http://127.0.0.1:9003/api/v1/validation/collect' \
 $body = @{
   scope = 'all'
   task_type = 'manual_backfill'
+  strategy = 'primary_resilient'
   from_date = '2026-06-18'
   to_date = '2026-07-18'
   collection_period = 'monthly'

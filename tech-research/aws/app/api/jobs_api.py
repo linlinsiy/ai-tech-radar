@@ -55,6 +55,10 @@ class CollectJobRequest(BaseModel):
         default="manual_backfill",
         description="任务类型: scheduled | manual_backfill"
     )
+    strategy: Literal["configured", "server_recommended", "primary_resilient"] = Field(
+        default="primary_resilient",
+        description="来源采集策略；默认 primary_resilient，按官方源和备用变体依次尝试"
+    )
     reanalysis_batch_no: Optional[str] = Field(
         default=None,
         min_length=1,

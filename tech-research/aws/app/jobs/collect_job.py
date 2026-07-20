@@ -17,7 +17,7 @@ from config import AWSConfig
 from crawler.base import CrawlerFactory, RawArticle
 from crawler.discovery_crawler import SearchDiscoveryCrawler
 from crawler.site_discovery_crawler import SiteDiscoveryCrawler
-from crawler.source_strategies import CONFIGURED, build_source_plans
+from crawler.source_strategies import CONFIGURED, PRIMARY_RESILIENT, build_source_plans
 from processor.parser import ContentParser
 from processor.dedup import DedupManager
 from processor.collection_audit import CollectionAudit
@@ -906,6 +906,7 @@ class CollectOrchestrator:
         from_date: str = None,
         to_date: str = None,
         task_type: str = "scheduled",
+        strategy: str = PRIMARY_RESILIENT,
         reanalysis_batch_no: str = None,
         collection_period: str = "auto",
     ) -> Dict[str, Any]:
@@ -917,6 +918,7 @@ class CollectOrchestrator:
             sources: 数据源编码列表（scope=sources 时使用）
             from_date: 开始日期（scope=timerange 时使用）
             to_date: 结束日期（scope=timerange 时使用）
+            strategy: configured / server_recommended / primary_resilient；默认使用具备备用变体的 primary_resilient
             reanalysis_batch_no: 指定正式采集快照批次（scope=rerun 时使用，缺省为最近快照）
             collection_period: auto / weekly / monthly / quarterly；auto 时按日期范围或默认配置判断
         出参：执行统计 {batch_no, phase_stats: {...}, ...}
@@ -926,7 +928,7 @@ class CollectOrchestrator:
         audit = CollectionAudit(self.config.data_dir, batch_no)
 
         logger.info("====== 采集分析任务开始 ======")
-        logger.info("batch_no=%s, scope=%s", batch_no, scope)
+        logger.info("batch_no=%s, scope=%s, strategy=%s", batch_no, scope, strategy)
         if scope == "rerun":
             return self._run_snapshot_reanalysis(
                 task_type,
@@ -971,7 +973,7 @@ class CollectOrchestrator:
         }
 
         collection = self.collect_stage(
-            strategy=CONFIGURED,
+            strategy=strategy,
             sources=sources,
             from_date=from_date,
             to_date=to_date,
@@ -1023,6 +1025,7 @@ class CollectOrchestrator:
                 "from_date": from_date,
                 "to_date": to_date,
                 "task_type": task_type,
+                "strategy": strategy,
                 "collection_period": collection_period,
                 "resolved_collection_period": processing_limits["period"],
             },
@@ -1558,6 +1561,7 @@ def handle_collect_job(params: str = None) -> Dict[str, Any]:
     from_date = None
     to_date = None
     task_type = "scheduled"
+    strategy = PRIMARY_RESILIENT
     reanalysis_batch_no = None
     collection_period = "auto"
 
@@ -1572,6 +1576,7 @@ def handle_collect_job(params: str = None) -> Dict[str, Any]:
             from_date = ps.get("from_date") or ps.get("from")
             to_date = ps.get("to_date") or ps.get("to")
             task_type = ps.get("task_type", "scheduled")
+            strategy = ps.get("strategy", PRIMARY_RESILIENT)
             reanalysis_batch_no = ps.get("reanalysis_batch_no")
             collection_period = ps.get("collection_period", "auto")
         except json.JSONDecodeError:
@@ -1585,6 +1590,7 @@ def handle_collect_job(params: str = None) -> Dict[str, Any]:
         from_date=from_date,
         to_date=to_date,
         task_type=task_type,
+        strategy=strategy,
         reanalysis_batch_no=reanalysis_batch_no,
         collection_period=collection_period,
     )
