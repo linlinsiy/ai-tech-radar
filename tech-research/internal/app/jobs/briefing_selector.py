@@ -66,6 +66,7 @@ class BriefingSelector:
         self.max_articles_per_topic = int(config.get("max_articles_per_topic", 3))
         self.max_topics_per_source = int(config.get("max_topics_per_source", 0))
         self.max_topics_per_info_type = int(config.get("max_topics_per_info_type", 0))
+        self.max_topics_per_category = int(config.get("max_topics_per_category", 0))
 
     def select(self, articles: List[Dict], briefing_type: str) -> Tuple[List[Dict], Dict]:
         target = int(self.config.get(f"target_{briefing_type}", self.config.get("target_topic", 12)))
@@ -96,6 +97,7 @@ class BriefingSelector:
             "selection_mode": "rank_with_upper_caps",
             "max_topics_per_source": self.max_topics_per_source,
             "max_topics_per_info_type": self.max_topics_per_info_type,
+            "max_topics_per_category": self.max_topics_per_category,
             "source_counts": dict(source_counts),
             "category_counts": dict(category_counts),
             "info_type_counts": dict(info_type_counts),
@@ -123,12 +125,17 @@ class BriefingSelector:
         outcomes: Dict[str, str] = {}
         source_counts: Counter = Counter()
         info_type_counts: Counter = Counter()
+        category_counts: Counter = Counter()
 
         for topic in topics:
             source_code = topic["primary"]["source_code"]
             info_type = topic["primary"]["info_type"] or "其他"
+            category = topic["category"] or "其他AI相关"
             if self.max_topics_per_source > 0 and source_counts[source_code] >= self.max_topics_per_source:
                 outcomes[topic["topic_id"]] = "excluded_by_source_cap"
+                continue
+            if self.max_topics_per_category > 0 and category_counts[category] >= self.max_topics_per_category:
+                outcomes[topic["topic_id"]] = "excluded_by_category_cap"
                 continue
             if self.max_topics_per_info_type > 0 and info_type_counts[info_type] >= self.max_topics_per_info_type:
                 outcomes[topic["topic_id"]] = "excluded_by_info_type_cap"
@@ -140,6 +147,7 @@ class BriefingSelector:
             selected.append(topic)
             source_counts[source_code] += 1
             info_type_counts[info_type] += 1
+            category_counts[category] += 1
             outcomes[topic["topic_id"]] = "selected"
 
         return selected, outcomes

@@ -231,10 +231,21 @@ class L3CandidateSelector:
             if not isinstance(detail, dict):
                 detail = {}
                 analysis["analysis_detail"] = detail
+            original_trend_reason = str(detail.get("trend_reason") or "").strip()
+            boost_reason = (
+                "同一话题被多个独立来源提及，提升趋势重要性"
+                f"（独立来源={len(source_codes)}，来源={','.join(source_codes)}，"
+                f"{original_trend:.1f}分提升至{self.topic_trend_boost_score:.1f}分）"
+            )
+            detail["trend_reason"] = (
+                f"{original_trend_reason}；{boost_reason}"
+                if original_trend_reason else boost_reason
+            )
             detail["topic_trend_boost"] = {
                 "distinct_source_count": len(source_codes),
                 "source_codes": source_codes,
                 "original_trend_score": original_trend,
+                "original_trend_reason": original_trend_reason,
                 "trend_score": self.topic_trend_boost_score,
                 "reason": "同一话题被多个独立来源提及，提升趋势重要性",
             }

@@ -21,17 +21,18 @@ logger = get_logger("processor.l2_analysis")
 # 组织相关性以主领域为准。以下主题即使使用了 Agent、MCP 等技术，仍不是
 # 券商软件研发的核心关注方向；只有 LLM 评分高于上限时才进行校正。
 ORG_RELEVANCE_DOMAIN_CAPS = (
-    ("computer_vision", 3.0, (
+    ("computer_vision", 1.0, (
         "computer vision", "agentic vision", "visual intelligence", "vision model", "vision agent",
         "视觉", "计算机视觉", "图像", "影像", "视频", "多模态视觉",
     )),
-    ("consumer_device", 3.0, (
+    ("consumer_device", 1.0, (
         "consumer electronics", "smartphone", "ai phone", "wearable", "personal device",
-        "消费电子", "智能手机", "ai手机", "可穿戴", "个人终端", "端侧终端",
+        "keyboard", "peripheral", "consumer device", "消费电子", "智能手机", "ai手机",
+        "可穿戴", "个人终端", "端侧终端", "键盘", "外设", "迷你键盘", "可编程硬件",
     )),
-    ("hardware", 3.0, (
+    ("hardware", 2.0, (
         "gpu", "cuda", "risc-v", "ai chip", "hardware", "server hardware",
-        "芯片", "算力硬件", "硬件融资", "服务器硬件", "纯gpu",
+        "芯片", "硬件", "算力硬件", "硬件融资", "服务器硬件", "纯gpu",
     )),
 )
 
@@ -194,6 +195,13 @@ class L2Analyzer:
         if domain_cap and scores["org_relevance"] > domain_cap["max_score"]:
             original_score = scores["org_relevance"]
             scores["org_relevance"] = domain_cap["max_score"]
+            original_reason = str(analysis_detail.get("org_relevance_reason") or "").strip()
+            if original_reason:
+                analysis_detail["org_relevance_original_reason"] = original_reason
+            analysis_detail["org_relevance_reason"] = (
+                f"文章主领域属于{domain_cap['domain']}，不属于券商软件研发重点方向，"
+                f"组织相关性按领域上限校正为{domain_cap['max_score']:.0f}分。"
+            )
             analysis_detail["org_relevance_guard"] = {
                 "domain": domain_cap["domain"],
                 "original_score": original_score,
@@ -448,7 +456,7 @@ class L2Analyzer:
             result[key] = value
         # 组织相关性使用固定锚点，避免模型评分再次集中在 7-8 分，
         # 并保留领域匹配度从外围趋势到核心业务/工程方向的区分粒度。
-        anchors = (0.0, 1.0, 3.0, 6.0, 7.0, 8.0, 9.0, 10.0)
+        anchors = (0.0, 1.0, 2.0, 3.0, 6.0, 7.0, 8.0, 9.0, 10.0)
         raw_org_score = result["org_relevance"]
         result["org_relevance"] = max(
             anchor for anchor in anchors if anchor <= raw_org_score

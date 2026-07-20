@@ -430,7 +430,7 @@ Invoke-RestMethod -Method Post `
 # 将下面批次号替换为 2.5 返回的 COL 批次号；此例只分析其中最近一周并导入
 curl -sS -X POST 'http://127.0.0.1:9003/api/v1/validation/analyze' \
   -H 'Content-Type: application/json' \
-  -d '{"collection_batch_no":"COL-20260718-101530-123456","from_date":"2026-07-12","to_date":"2026-07-18","collection_period":"weekly"}' \
+  -d '{"collection_batch_no":"COL-20260719-190227-129733","from_date":"2026-07-11","to_date":"2026-07-17","collection_period":"weekly"}' \
   | python3 -m json.tool
 ```
 

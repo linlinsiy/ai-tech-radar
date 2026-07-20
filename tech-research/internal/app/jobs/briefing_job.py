@@ -382,13 +382,14 @@ def handle_briefing_job(params: str = "") -> Dict[str, Any]:
         topics, selection_metadata = selector.select(candidates, briefing_type)
         selection_metadata["analysis_batch_no"] = analysis_batch_no
         logger.info(
-            "L4 选题完成: successful_l3=%d, candidate_topics=%d, selected=%d, shortfall=%d, sources=%s, categories=%s",
+            "L4 选题完成: successful_l3=%d, candidate_topics=%d, selected=%d, shortfall=%d, sources=%s, categories=%s, info_types=%s",
             len(candidates),
             selection_metadata["candidate_topics"],
             len(topics),
             selection_metadata["shortfall_topics"],
             selection_metadata["source_counts"],
             selection_metadata["category_counts"],
+            selection_metadata["info_type_counts"],
         )
         if not topics:
             _persist_selection_metadata(title, selection_metadata)

@@ -129,6 +129,28 @@ class BriefingSelectorTests(unittest.TestCase):
         self.assertEqual(metadata["shortfall_topics"], 3)
         self.assertEqual(metadata["topic_outcomes"]["2"], "excluded_by_info_type_cap")
 
+    def test_category_cap_skips_excess_topics_without_lowering_the_threshold(self):
+        config = {
+            **self.config,
+            "target_weekly": 4,
+            "max_topics_per_source": 0,
+            "max_topics_per_info_type": 0,
+            "max_topics_per_category": 2,
+        }
+        candidates = [
+            article(1, "source-a", "Agent与智能体", "工程实践", 9.9, title="Alpha agent"),
+            article(2, "source-b", "Agent与智能体", "产品发布", 9.8, title="Beta agent"),
+            article(3, "source-c", "Agent与智能体", "模型发布", 9.7, title="Gamma agent"),
+            article(4, "source-d", "AI基础设施", "工程实践", 8.0, title="Platform update"),
+        ]
+
+        selected, metadata = BriefingSelector(config).select(candidates, "weekly")
+
+        self.assertEqual(len(selected), 3)
+        self.assertEqual(metadata["category_counts"]["Agent与智能体"], 2)
+        self.assertEqual(metadata["shortfall_topics"], 1)
+        self.assertEqual(metadata["topic_outcomes"]["3"], "excluded_by_category_cap")
+
     def test_same_event_from_two_sources_is_one_topic(self):
         first = article(1, "source-a", "大模型基础技术", "模型发布", title="GPT 5.6 official model release")
         second = article(2, "source-b", "大模型基础技术", "行业动态", title="GPT 5.6 official model release details")

@@ -194,6 +194,7 @@ class InternalConfig:
             "max_articles_per_topic": self._config.getint("DEFAULT", "briefing.selection.max_articles_per_topic", fallback=3),
             "max_topics_per_source": self._config.getint("DEFAULT", "briefing.selection.max_topics_per_source", fallback=3),
             "max_topics_per_info_type": self._config.getint("DEFAULT", "briefing.selection.max_topics_per_info_type", fallback=5),
+            "max_topics_per_category": self._config.getint("DEFAULT", "briefing.selection.max_topics_per_category", fallback=5),
         }
 
     @property

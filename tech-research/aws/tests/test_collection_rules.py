@@ -204,6 +204,10 @@ class CollectionRuleTests(unittest.TestCase):
             3.0,
         )
         self.assertEqual(
+            L2Analyzer._extract_scores({"score_org_relevance": 2})["org_relevance"],
+            2.0,
+        )
+        self.assertEqual(
             L2Analyzer._extract_scores({"score_org_relevance": 9})["org_relevance"],
             9.0,
         )
@@ -218,7 +222,18 @@ class CollectionRuleTests(unittest.TestCase):
 
         cap = L2Analyzer._organization_domain_cap(article, {"tech_tags": ["Agent", "MCP"]})
 
-        self.assertEqual(cap, {"domain": "computer_vision", "max_score": 3.0})
+        self.assertEqual(cap, {"domain": "computer_vision", "max_score": 1.0})
+
+    def test_l2_caps_consumer_hardware_keyword_to_one(self):
+        article = RawArticle(
+            source_code="source-a",
+            title="OpenAI 首款硬件是一个迷你键盘",
+            url="https://example.com/keyboard",
+        )
+
+        cap = L2Analyzer._organization_domain_cap(article, {})
+
+        self.assertEqual(cap, {"domain": "consumer_device", "max_score": 1.0})
 
     def test_legacy_source_roles_remain_stable_for_import_compatibility(self):
         self.assertEqual(AWSConfig._default_selection_role("academic"), "research")
@@ -304,8 +319,8 @@ class CollectionRuleTests(unittest.TestCase):
 
         result = analyzer._analyze_single(article)
 
-        self.assertEqual(result["analysis"]["score_org_relevance"], 3.0)
-        self.assertEqual(result["analysis"]["rank_score"], 6.05)
+        self.assertEqual(result["analysis"]["score_org_relevance"], 1.0)
+        self.assertEqual(result["analysis"]["rank_score"], 5.35)
         self.assertEqual(
             result["analysis"]["analysis_detail"]["org_relevance_guard"]["domain"],
             "computer_vision",
@@ -1208,6 +1223,9 @@ class CollectionRuleTests(unittest.TestCase):
                 "rank_score": 5.8,
                 "value_score": 5.8,
             })
+            result["analysis"]["analysis_detail"] = {
+                "trend_reason": "Kimi K3 正式发布，属于重要模型变化",
+            }
 
         selected, metadata = selector.select(results)
 
@@ -1215,6 +1233,10 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(selected[0]["analysis"]["score_trend"], 10.0)
         self.assertEqual(selected[0]["analysis"]["rank_score"], 6.45)
         self.assertEqual(metadata["topic_trend_boosts"][0]["distinct_source_count"], 2)
+        detail = selected[0]["analysis"]["analysis_detail"]
+        self.assertIn("Kimi K3 正式发布", detail["trend_reason"])
+        self.assertIn("同一话题被多个独立来源提及", detail["trend_reason"])
+        self.assertEqual(detail["topic_trend_boost"]["original_trend_score"], 7.0)
 
     def test_l3_topic_trend_boost_skips_repeated_opinion_articles(self):
         selector = L3CandidateSelector({
