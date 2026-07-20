@@ -236,6 +236,21 @@ def _parse_iso(s: Optional[str]) -> Optional[datetime]:
 
         return None
 
+
+def _truncate_utf8(value: Optional[str], max_bytes: int = 60000) -> Optional[str]:
+    """Keep TEXT-compatible excerpts within a conservative UTF-8 byte limit."""
+    if value is None:
+        return None
+    text = str(value)
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    suffix = "\n...[truncated]"
+    truncated = encoded[: max_bytes - len(suffix.encode("utf-8"))].decode(
+        "utf-8", errors="ignore"
+    )
+    return f"{truncated}{suffix}"
+
     try:
 
         # 兼容 Z 后缀和时区
@@ -425,35 +440,45 @@ async def handle_import(request: Request, body: ImportRequest):
 
                         source_id = src.id
 
-                article = Article(
+                raw_summary = _truncate_utf8(item.raw_summary)
+                if item.raw_summary and raw_summary != item.raw_summary:
+                    logger.warning(
+                        "原始摘要过长，已截断: url_hash=%s, original_bytes=%d",
+                        item.url_hash,
+                        len(item.raw_summary.encode("utf-8")),
+                    )
+                # New article writes are isolated so one malformed record cannot
+                # roll back the outer import batch transaction.
+                with session.begin_nested():
+                    article = Article(
 
-                    source_id=source_id,
+                        source_id=source_id,
 
-                    title=item.title,
+                        title=item.title,
 
-                    url=item.url,
+                        url=item.url,
 
-                    url_hash=item.url_hash,
+                        url_hash=item.url_hash,
 
-                    author=item.author,
+                        author=item.author,
 
-                    publish_time=_parse_iso(item.publish_time),
+                        publish_time=_parse_iso(item.publish_time),
 
-                    crawl_time=_parse_iso(item.crawl_time),
+                        crawl_time=_parse_iso(item.crawl_time),
 
-                    raw_summary=item.raw_summary,
+                        raw_summary=raw_summary,
 
-                    full_content=item.full_content,
+                        full_content=item.full_content,
 
-                    content_hash=item.content_hash,
+                        content_hash=item.content_hash,
 
-                    import_batch_id=batch.id,
+                        import_batch_id=batch.id,
 
-                )
+                    )
 
-                session.add(article)
+                    session.add(article)
 
-                session.flush()
+                    session.flush()
 
                 url_hash_to_article_id[item.url_hash] = article.id
 

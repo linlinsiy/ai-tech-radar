@@ -23,7 +23,7 @@ CREATE TABLE `ai_radar_article` (
   `author` varchar(128) DEFAULT NULL COMMENT '作者',
   `publish_time` datetime DEFAULT NULL COMMENT '发布时间',
   `crawl_time` datetime DEFAULT NULL COMMENT '抓取时间',
-  `raw_summary` text COMMENT '原文摘要',
+  `raw_summary` longtext COMMENT '原文摘要',
   `full_content` longtext COMMENT '完整原文',
   `content_hash` char(64) DEFAULT NULL COMMENT '内容指纹',
   `import_batch_id` bigint unsigned NOT NULL COMMENT '最近一次导入或重分析批次ID',

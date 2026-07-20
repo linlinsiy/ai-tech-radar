@@ -53,6 +53,13 @@ class ImportModelTests(unittest.TestCase):
             source,
         )
 
+    def test_import_truncates_oversized_raw_summary_and_uses_savepoint(self):
+        source = self._import_api_source()
+
+        self.assertIn("def _truncate_utf8", source)
+        self.assertIn('raw_summary = _truncate_utf8(item.raw_summary)', source)
+        self.assertIn("with session.begin_nested():", source)
+
 
 if __name__ == "__main__":
     unittest.main()

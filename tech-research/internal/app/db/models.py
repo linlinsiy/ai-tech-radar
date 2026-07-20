@@ -11,6 +11,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import QueuePool
+from sqlalchemy.dialects.mysql import LONGTEXT
 from config import InternalConfig
 
 Base = declarative_base()
@@ -80,8 +81,8 @@ class Article(Base):
     author = Column(String(128), comment="作者")
     publish_time = Column(DateTime, comment="发布时间")
     crawl_time = Column(DateTime, comment="抓取时间")
-    raw_summary = Column(Text, comment="原文摘要")
-    full_content = Column(Text, comment="完整原文")
+    raw_summary = Column(LONGTEXT, comment="原文摘要")
+    full_content = Column(LONGTEXT, comment="完整原文")
     content_hash = Column(String(64), comment="内容指纹")
     import_batch_id = Column(BigInteger, nullable=False, comment="最近一次导入或重分析批次 ID")
 
