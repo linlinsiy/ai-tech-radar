@@ -877,7 +877,7 @@ class CollectionRuleTests(unittest.TestCase):
             orchestrator,
             "analyze_stage",
             return_value=analysis_run,
-        ), patch.object(
+        ) as analyze_stage, patch.object(
             orchestrator.importer,
             "build_payload",
             return_value=payload,
@@ -901,6 +901,7 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(result["processing_limits"]["period"], "monthly")
         self.assertEqual(result["processing_limits"]["l3_max_candidates"], 50)
         load_snapshot.assert_called_once_with("IMP-20260701-120000")
+        self.assertFalse(analyze_stage.call_args.kwargs["use_history_cache"])
         persist.assert_called_once_with(payload, failure, result)
 
     def test_snapshot_reanalysis_rejects_empty_requested_date_range(self):
