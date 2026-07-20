@@ -18,6 +18,7 @@ venv/
 # Logs & runtime output
 *.log
 *.txt
+!tech-research/aws/requirements.txt
 tech-research/aws/logs/
 tech-research/internal/logs/
 tech-research/aws/data/
