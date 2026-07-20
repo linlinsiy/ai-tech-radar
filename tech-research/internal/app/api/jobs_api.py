@@ -29,6 +29,11 @@ class BriefingJobRequest(BaseModel):
         default=None,
         description="覆盖结束日期，格式 YYYY-MM-DD，可选"
     )
+    analysis_batch_no: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="指定成功导入批次；传入后简报只使用该批次当前文章的 L2/L3 结果"
+    )
 
 
 @router.post("/api/v1/jobs/briefing")

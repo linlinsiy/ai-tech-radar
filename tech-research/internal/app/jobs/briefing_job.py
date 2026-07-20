@@ -10,7 +10,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from config import InternalConfig
-from db.models import Article, ArticleAnalysis, BriefingDraft, DeepInsight, Source, get_session
+from db.models import (
+    Article, ArticleAnalysis, BriefingDraft, DeepInsight, ImportBatch, Source, get_session,
+)
 from jobs.briefing_render import (
     assemble_briefing as _assemble_briefing,
     strip_markdown_fence as _strip_markdown_fence,
@@ -24,11 +26,16 @@ from kb.markdown_gen import generate_briefing
 logger = logging.getLogger("jobs.briefing")
 
 
-def _query_articles(session, start_date: datetime, end_date: datetime) -> List[Dict]:
-    """Load only period articles whose L2 and L3 analyses both succeeded."""
+def _query_articles(
+    session,
+    start_date: datetime,
+    end_date: datetime,
+    analysis_batch_id: Optional[int] = None,
+) -> List[Dict]:
+    """Load successful L2/L3 articles, optionally bounded to one import batch."""
     from sqlalchemy import desc, func
 
-    rows = (
+    query = (
         session.query(Article, ArticleAnalysis, Source, DeepInsight)
         .join(ArticleAnalysis, Article.id == ArticleAnalysis.article_id)
         .join(Source, Article.source_id == Source.id)
@@ -38,8 +45,10 @@ def _query_articles(session, start_date: datetime, end_date: datetime) -> List[D
         .filter(ArticleAnalysis.analysis_status == "success")
         .filter(DeepInsight.analysis_status == "success")
         .order_by(desc(func.coalesce(ArticleAnalysis.rank_score, ArticleAnalysis.value_score)))
-        .all()
     )
+    if analysis_batch_id is not None:
+        query = query.filter(Article.import_batch_id == analysis_batch_id)
+    rows = query.all()
 
     result = []
     for article, analysis, source, insight in rows:
@@ -295,12 +304,14 @@ def handle_briefing_job(params: str = "") -> Dict[str, Any]:
     briefing_type = "weekly"
     from_date = None
     to_date = None
+    analysis_batch_no = None
     if params:
         try:
             parsed_params = json.loads(params) if isinstance(params, str) else params
             briefing_type = parsed_params.get("briefing_type", "weekly")
             from_date = parsed_params.get("from_date") or parsed_params.get("from")
             to_date = parsed_params.get("to_date") or parsed_params.get("to")
+            analysis_batch_no = str(parsed_params.get("analysis_batch_no") or "").strip() or None
         except (json.JSONDecodeError, AttributeError):
             logger.warning("简报调度参数解析失败: %s", params)
 
@@ -324,16 +335,52 @@ def handle_briefing_job(params: str = "") -> Dict[str, Any]:
     time_range = f"{start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}"
     title = f"{_briefing_type_name(briefing_type)}（{time_range}）"
     logger.info("====== 简报生成任务开始 ======")
-    logger.info("briefing_type=%s, time_range=%s", briefing_type, time_range)
+    logger.info(
+        "briefing_type=%s, time_range=%s, analysis_batch_no=%s",
+        briefing_type,
+        time_range,
+        analysis_batch_no or "all_successful_batches",
+    )
 
     session = get_session()
     try:
-        candidates = _query_articles(session, start_date, end_date)
+        analysis_batch_id = None
+        if analysis_batch_no:
+            analysis_batch = session.query(ImportBatch).filter(
+                ImportBatch.batch_no == analysis_batch_no
+            ).first()
+            if analysis_batch is None:
+                return {
+                    "status": "failed",
+                    "reason": "analysis_batch_not_found",
+                    "analysis_batch_no": analysis_batch_no,
+                }
+            if analysis_batch.import_status != "success":
+                return {
+                    "status": "failed",
+                    "reason": "analysis_batch_not_success",
+                    "analysis_batch_no": analysis_batch_no,
+                    "import_status": analysis_batch.import_status,
+                }
+            analysis_batch_id = analysis_batch.id
+
+        candidates = _query_articles(
+            session,
+            start_date,
+            end_date,
+            analysis_batch_id=analysis_batch_id,
+        )
         if not candidates:
-            return {"status": "skipped", "reason": "no_successful_l3_articles", "time_range": time_range}
+            return {
+                "status": "skipped",
+                "reason": "no_successful_l3_articles",
+                "time_range": time_range,
+                "analysis_batch_no": analysis_batch_no,
+            }
 
         selector = BriefingSelector(InternalConfig.get_instance().briefing_selection_config)
         topics, selection_metadata = selector.select(candidates, briefing_type)
+        selection_metadata["analysis_batch_no"] = analysis_batch_no
         logger.info(
             "L4 选题完成: successful_l3=%d, candidate_topics=%d, selected=%d, shortfall=%d, sources=%s, categories=%s",
             len(candidates),
@@ -417,6 +464,7 @@ def handle_briefing_job(params: str = "") -> Dict[str, Any]:
             "briefing_type": briefing_type,
             "title": title,
             "time_range": time_range,
+            "analysis_batch_no": analysis_batch_no,
             "articles_count": len(selected_article_ids),
             "insights_count": len(selected_insight_ids),
             "content_length": len(content),

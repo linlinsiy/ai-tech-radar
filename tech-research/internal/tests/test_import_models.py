@@ -60,6 +60,23 @@ class ImportModelTests(unittest.TestCase):
         self.assertIn('raw_summary = _truncate_utf8(item.raw_summary)', source)
         self.assertIn("with session.begin_nested():", source)
 
+    def test_briefing_api_supports_explicit_analysis_batch_boundary(self):
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "app", "api", "jobs_api.py"
+        )
+        with open(path, "r", encoding="utf-8") as source_file:
+            source = source_file.read()
+
+        self.assertIn("analysis_batch_no: Optional[str]", source)
+        briefing_job_path = os.path.join(
+            os.path.dirname(__file__), "..", "app", "jobs", "briefing_job.py"
+        )
+        with open(briefing_job_path, "r", encoding="utf-8") as source_file:
+            briefing_job_source = source_file.read()
+
+        self.assertIn("analysis_batch_no: Optional[str]", source)
+        self.assertIn("Article.import_batch_id == analysis_batch_id", briefing_job_source)
+
 
 if __name__ == "__main__":
     unittest.main()
