@@ -32,7 +32,7 @@ class BriefingJobRequest(BaseModel):
     analysis_batch_no: Optional[str] = Field(
         default=None,
         max_length=64,
-        description="指定成功导入批次；传入后简报只使用该批次当前文章的 L2/L3 结果"
+        description="指定成功分析批次；传入后简报只使用该批次的 L2/L3 结果"
     )
 
 

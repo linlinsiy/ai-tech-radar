@@ -348,12 +348,30 @@ curl -sS -X POST 'http://127.0.0.1:9003/api/v1/jobs/collect' \
 
 ---
 
+### 2.4.1 批次与缓存定义
+
+| 概念 | 批次号 | 数据库落点 | 说明 |
+|---|---|---|---|
+| 采集批次 | `COL-*` | `ai_radar_collection_batch`、`ai_radar_collection_article` | 表示一次采集拿到了哪些文章；文章正文仍保存在 `ai_radar_article`，采集范围由关系表记录。 |
+| 分析批次 | `IMP-*` / `RERUN-*` | `ai_radar_import_batch`、`ai_radar_analysis_article`、`ai_radar_article_analysis`、`ai_radar_deep_insight` | 表示一次 L2/L3 分析使用了哪些文章以及得到哪些结果；沿用历史表名 `ai_radar_import_batch`，但语义是分析批次。 |
+| 本地快照 | `COL-*` / `IMP-*` / `RERUN-*` | `data/analysis_snapshots/<batch_no>.json` | 统一快照目录和结构；`COL-*` 保存采集文章，`IMP/RERUN-*` 保存分析输入文章，均可作为后续分析输入。 |
+| 失败导入 | `*.payload.json` | `data/failed_imports/` | 仅用于重试 internal `/api/v1/radar/import`；重试成功后与正常导入成功无区别。 |
+
+缓存规则：
+
+- 批内去重始终保留，只在一次执行中去掉重复 URL/正文。
+- 分析缓存默认关闭：`analysis.cache.enabled=false`。重新调用 `/api/v1/jobs/collect` 或 `/api/v1/validation/analyze` 会重新执行 L2/L3，并生成新的分析批次。
+- `processed_hashes.json` 不再作为默认分析跳过依据；未来评分 Prompt 稳定后，可显式打开 `analysis.cache.enabled=true` 再使用。
+- Briefing 只读取一个分析批次；传 `analysis_batch_no` 时使用指定批次，不传时使用最新成功且存在 L3 入选关系的分析批次。
+
+---
+
 ### 2.5 `POST /api/v1/validation/collect` -- 分阶段正式采集（HTTP）
 
 - **协议**：HTTP
 - **端口**：9003
 - **鉴权**：无
-- **功能**：只执行正式来源采集和文章详情读取，不调用 L2/L3、不导入内部服务。采集正文、来源记录和审计保存为正式可回放 `COL-*` 快照，供后续单独分析。
+- **功能**：只执行正式来源采集和文章详情读取，不调用 L2/L3。采集正文、来源记录和审计保存为正式可回放 `COL-*` 快照，并通过内部导入接口写入采集批次、文章主表和采集批次-文章关系表，供后续单独分析。
 - **主逻辑关系**：复用正式任务的 `CollectOrchestrator.collect_stage()`，使用正式数据源配置与周期容量；不维护独立爬虫逻辑。
 - **请求体**：字段与 `POST /api/v1/jobs/collect` 一致；`collection_period` 可选 `auto/weekly/monthly/quarterly`。
 
@@ -367,7 +385,7 @@ curl -sS -X POST 'http://127.0.0.1:9003/api/v1/jobs/collect' \
 | `strategy` | string | 否 | `primary_resilient`（默认）/ `configured` / `server_recommended`；正式与分阶段采集均使用该策略 |
 | `collection_period` | string | 否 | `auto` / `weekly` / `monthly` / `quarterly`，默认 `auto` |
 
-- **本地结果**：成功后返回 `COL-*` 的 `batch_no` 和 `result_file`。原始文章正文和来源配置保存到 `data/analysis_snapshots/<batch_no>.json`，来源审计保存到 `data/collection_audit/<batch_no>.json`。该采集批次尚未写入 MySQL，也不写入已处理去重缓存。
+- **本地与数据库结果**：成功后返回 `COL-*` 的 `batch_no` 和 `result_file`。原始文章正文和来源配置保存到 `data/analysis_snapshots/<batch_no>.json`，来源审计保存到 `data/collection_audit/<batch_no>.json`。同时写入 MySQL 的 `ai_radar_collection_batch`、`ai_radar_article`、`ai_radar_collection_article`；不写入 L2/L3，也默认不写入分析去重缓存。
 - **Linux curl 示例**
 
 ```bash
@@ -397,7 +415,7 @@ Invoke-RestMethod -Method Post `
   -Body $body | ConvertTo-Json -Depth 10
 ```
 
-- **验证要点**：响应的 `success` 应为 `true`；记录返回的 `data.batch_no`，检查 `data.result_file` 和对应审计文件存在，并关注 `article_count`、`source_distribution` 和各来源 `status`。该接口不会创建内部导入批次或简报草稿。
+- **验证要点**：响应的 `success` 应为 `true`；记录返回的 `data.batch_no`，检查 `data.result_file` 和对应审计文件存在，并关注 `article_count`、`source_distribution` 和各来源 `status`。该接口不会创建分析批次、L2/L3 结果或简报草稿。
 
 ---
 
@@ -406,7 +424,7 @@ Invoke-RestMethod -Method Post `
 - **协议**：HTTP
 - **端口**：9003
 - **鉴权**：无
-- **功能**：读取正式本地快照并执行候选池、L2、L3 和受控导入；不重新采集。传入 `COL-*` 时执行首次 L2/L3 分析；传入完整任务或先前分析生成的 `IMP-*`/`RERUN-*` 时执行重分析。所有显式快照均忽略历史 URL/正文去重缓存、只做批内去重，以便同一月度采集快照可反复进行周度和月度分析验证。成功后写入 internal/MySQL，并生成或更新正式分析快照。
+- **功能**：读取正式本地快照并执行候选池、L2、L3 和受控导入；不重新采集。传入 `COL-*` 时执行首次 L2/L3 分析；传入完整任务或先前分析生成的 `IMP-*`/`RERUN-*` 时执行重分析。分析阶段默认不使用历史 URL/正文去重缓存、只做批内去重，以便同一月度采集快照可反复进行周度和月度分析验证。成功后写入 internal/MySQL，并生成或更新正式分析快照。
 - **主逻辑关系**：复用正式任务的 `CollectOrchestrator.analyze_stage()` 和导入客户端，因此评分、标题语义路由、自动发现、L3 排序、失败持久化和导入协议与正式运行一致。
 - **请求体**
 
@@ -421,13 +439,13 @@ Invoke-RestMethod -Method Post `
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `collection_batch_no` | string | 是 | 可回放快照批次号：首次分析传 `COL-*`；重分析可传正式完整任务或既往分析生成的 `IMP-*`/`RERUN-*` |
+| `collection_batch_no` | string | 否 | 可回放快照批次号：首次分析传 `COL-*`；重分析可传正式完整任务或既往分析生成的 `IMP-*`/`RERUN-*`；不传则合并本地全部 `COL-*` 快照后按时间范围分析 |
 | `from_date` | string | 否 | 仅分析快照中该日期起的文章 |
 | `to_date` | string | 否 | 仅分析快照中该日期止的文章 |
 | `task_type` | string | 否 | 任务标识，默认 `manual_backfill` |
 | `collection_period` | string | 否 | `auto` / `weekly` / `monthly` / `quarterly`，默认 `auto` |
 
-- **结果与落地**：成功后返回新的 `IMP-*`（首次分析）或 `RERUN-*`（重分析）批次和导入状态；当前有效 L2/L3 结果写入 internal/MySQL。显式快照分析会替代这些文章旧的 L3 洞察，未在本轮生成洞察的旧记录标记为 `superseded`，因此批次查询的“是否L3最终入选”反映本轮结果。分析输入快照保存到 `data/analysis_snapshots/<批次号>.json`，审计保存到 `data/collection_audit/<批次号>.json`。导入失败时，完整请求保存到 `data/failed_imports/` 供现有导入接口重试。
+- **结果与落地**：成功后返回新的 `IMP-*`（首次分析）或 `RERUN-*`（重分析）分析批次和导入状态；L2/L3 结果按 `analysis_batch_id + article_id` 独立保存，不覆盖其他周/月批次。批次范围写入 `ai_radar_analysis_article`，可关联来源 `COL-*` 采集批次。分析输入快照保存到 `data/analysis_snapshots/<批次号>.json`，审计保存到 `data/collection_audit/<批次号>.json`。导入失败时，完整请求保存到 `data/failed_imports/`，应使用 `.payload.json` 调用内部导入接口重试；重试成功后与正常导入成功无区别。
 - **Linux curl 示例**
 
 ```bash
@@ -435,6 +453,12 @@ Invoke-RestMethod -Method Post `
 curl -sS -X POST 'http://127.0.0.1:9003/api/v1/validation/analyze' \
   -H 'Content-Type: application/json' \
   -d '{"collection_batch_no":"COL-20260719-190227-129733","from_date":"2026-07-11","to_date":"2026-07-17","collection_period":"weekly"}' \
+  | python3 -m json.tool
+
+# 不指定 COL 批次：合并 AWS 本地所有 COL 快照，筛选时间范围后生成一个不关联采集批次的分析批次
+curl -sS -X POST 'http://127.0.0.1:9003/api/v1/validation/analyze' \
+  -H 'Content-Type: application/json' \
+  -d '{"from_date":"2026-07-11","to_date":"2026-07-17","collection_period":"weekly"}' \
   | python3 -m json.tool
 ```
 
@@ -945,6 +969,11 @@ curl -sS -X POST 'http://168.64.18.190:9001/api/v1/jobs/briefing' \
   -H 'Content-Type: application/json' \
   -d '{"briefing_type":"monthly"}' | python3 -m json.tool
 
+# 使用指定分析批次生成月报，推荐生产验证时使用，避免误取最新批次
+curl -sS -X POST 'http://168.64.18.190:9001/api/v1/jobs/briefing' \
+  -H 'Content-Type: application/json' \
+  -d '{"briefing_type":"monthly","from_date":"2026-06-19","to_date":"2026-07-19","analysis_batch_no":"IMP-20260720-134217"}' | python3 -m json.tool
+
 # 生成最近 90 天季报
 curl -sS -X POST 'http://168.64.18.190:9001/api/v1/jobs/briefing' \
   -H 'Content-Type: application/json' \
@@ -955,6 +984,8 @@ curl -sS -X POST 'http://168.64.18.190:9001/api/v1/jobs/briefing' \
   -H 'Content-Type: application/json' \
   -d '{"briefing_type":"quarterly","from_date":"2026-04-01","to_date":"2026-06-30"}' | python3 -m json.tool
 ```
+
+说明：简报生成只读取一个分析批次。传入 `analysis_batch_no` 时严格使用该批次的 `ai_radar_analysis_article`、L2 和 L3 结果；不传时自动选择最新成功且有 L3 入选关系的分析批次。
 
 ---
 

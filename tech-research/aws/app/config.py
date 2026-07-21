@@ -283,6 +283,14 @@ class AWSConfig:
         }
 
     @property
+    def analysis_cache_enabled(self) -> bool:
+        """Whether historical URL/content cache may skip L2/L3 analysis."""
+        return self.get(
+            option="analysis.cache.enabled",
+            fallback="false",
+        ).lower() == "true"
+
+    @property
     def l3_selection_config(self) -> Dict:
         """L3 前置主题聚合和统一评分排序配置。"""
         return {

@@ -446,6 +446,27 @@ def run_staged_collection(
         "processing_limits": limits,
         "collection_snapshot": {"path": snapshot_path, "article_count": len(articles)},
     }
+    payload, import_result = orchestrator.import_collection_results(
+        collection_batch_no=batch_no,
+        task_type=task_type,
+        source_profiles=collection["source_profiles"],
+        articles=articles,
+        from_date=from_date,
+        to_date=to_date,
+        strategy=strategy,
+        collection_period=limits["period"],
+        snapshot_path=snapshot_path,
+    )
+    stats["collection_import"] = {
+        "status": "success" if import_result.get("success") else "failed",
+    }
+    if not import_result.get("success"):
+        stats["collection_import"]["error"] = import_result.get("error", "unknown_error")
+        stats["collection_import"]["retry_files"] = orchestrator._persist_failed_import_payload(
+            payload,
+            import_result,
+            stats,
+        )
     audit.save([
         {"source_code": item.source_code, "url": item.url, "title": item.title,
          "publish_time": item.publish_time, "status": "collected"}
@@ -460,7 +481,7 @@ def run_staged_collection(
 
 def run_staged_analysis(
     config: AWSConfig,
-    collection_batch_no: str,
+    collection_batch_no: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     task_type: str = "manual_backfill",
@@ -468,8 +489,36 @@ def run_staged_analysis(
 ) -> Dict[str, Any]:
     """Analyze a formal COL snapshot or reanalyze an existing analysis snapshot."""
     store = CollectionSnapshotStore(config.data_dir)
-    snapshot = store.load(collection_batch_no)
-    if not str(snapshot.get("batch_no") or "").startswith("COL-"):
+    if collection_batch_no:
+        snapshot = store.load(collection_batch_no)
+    else:
+        snapshots = []
+        for item in store.list_snapshots(limit=500):
+            batch_no = str(item.get("batch_no") or "")
+            if not batch_no.startswith("COL-"):
+                continue
+            snapshots.append(store.load(batch_no))
+        if not snapshots:
+            raise ValueError("未找到可按时间范围分析的 COL 采集快照")
+        merged_articles = {}
+        merged_profiles = {}
+        for item in snapshots:
+            merged_profiles.update(item.get("source_profiles") or {})
+            for article in item.get("articles", []):
+                if article.get("url_hash"):
+                    merged_articles[article["url_hash"]] = article
+        snapshot = {
+            "batch_no": None,
+            "request": {
+                "scope": "timerange",
+                "from_date": from_date,
+                "to_date": to_date,
+                "collection_period": collection_period,
+            },
+            "source_profiles": merged_profiles,
+            "articles": list(merged_articles.values()),
+        }
+    if collection_batch_no and not str(snapshot.get("batch_no") or "").startswith("COL-"):
         # Full collect and staged analysis both persist analysis snapshots. Reuse
         # the same formal rerun path rather than maintaining a second L2/L3 flow.
         return CollectOrchestrator(config)._run_snapshot_reanalysis(
@@ -549,6 +598,11 @@ def run_staged_analysis(
     payload, import_result = orchestrator.import_analysis_results(
         batch_no, task_type, source_profiles, l2_results, discarded, l3_candidates,
         l3_results, operation_metrics, replace_existing_insights=True,
+        collection_batch_no=collection_batch_no,
+        from_date=from_date,
+        to_date=to_date,
+        strategy=request.get("strategy"),
+        collection_period=limits["period"],
     )
     result = {
         "batch_no": batch_no,
@@ -572,6 +626,10 @@ def run_staged_analysis(
             payload, import_result, result,
         )
         return result
+    if config.analysis_cache_enabled:
+        orchestrator.dedup.mark_processed_batch([
+            item["article"] for item in l2_results
+        ])
     analysis_path = store.save(
         batch_no=batch_no,
         request={**request, "collection_batch_no": collection_batch_no,
@@ -618,8 +676,6 @@ def handle_validation_collect(params: Any = None) -> Dict[str, Any]:
 def handle_validation_analysis(params: Any = None) -> Dict[str, Any]:
     parsed = _parse_params(params)
     collection_batch_no = parsed.get("collection_batch_no") or parsed.get("batch_no")
-    if not collection_batch_no:
-        raise ValueError("collection_batch_no 不能为空")
     return run_staged_analysis(
         AWSConfig(),
         collection_batch_no=collection_batch_no,

@@ -1,7 +1,7 @@
 ﻿-- AI技术趋势雷达数据库表结构
--- 版本: 2026-07-17
+-- 版本: 2026-07-21
 -- 用途: 重建数据库时的全量建库脚本。
--- 修改说明: 对齐当前 L1-L5 流程、统一 rank_score、来源选题角色和批次运营统计设计。
+-- 修改说明: 对齐采集批次/分析批次分离、批次文章关系表、按分析批次隔离 L2/L3 结果。
 
 SET NAMES utf8mb4;
 -- 2026-07-17 维护基线：本文件是重建数据库时的唯一执行入口。
@@ -26,7 +26,7 @@ CREATE TABLE `ai_radar_article` (
   `raw_summary` longtext COMMENT '原文摘要',
   `full_content` longtext COMMENT '完整原文',
   `content_hash` char(64) DEFAULT NULL COMMENT '内容指纹',
-  `import_batch_id` bigint unsigned NOT NULL COMMENT '最近一次导入或重分析批次ID',
+  `import_batch_id` bigint unsigned DEFAULT NULL COMMENT '兼容字段：最近一次分析批次ID，批次范围以关系表为准',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
@@ -44,6 +44,7 @@ DROP TABLE IF EXISTS `ai_radar_article_analysis`;
 CREATE TABLE `ai_radar_article_analysis` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
   `article_id` bigint unsigned NOT NULL COMMENT '关联文章ID',
+  `analysis_batch_id` bigint unsigned NOT NULL COMMENT 'L2分析所属分析批次ID',
   `summary_cn` text NOT NULL COMMENT '中文摘要',
   `category` varchar(128) DEFAULT NULL COMMENT '资讯一级分类',
   `sub_category` varchar(128) DEFAULT NULL COMMENT '资讯子分类',
@@ -65,7 +66,9 @@ CREATE TABLE `ai_radar_article_analysis` (
   `analysis_status` varchar(32) NOT NULL DEFAULT 'success' COMMENT '分析状态',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_article_id` (`article_id`),
+  UNIQUE KEY `uk_analysis_batch_article` (`analysis_batch_id`, `article_id`),
+  KEY `idx_article_analysis_article` (`article_id`),
+  KEY `idx_analysis_batch_id` (`analysis_batch_id`),
   KEY `idx_rank_score` (`rank_score`),
   KEY `idx_category` (`category`),
   KEY `idx_category_sub_category` (`category`, `sub_category`),
@@ -80,6 +83,7 @@ DROP TABLE IF EXISTS `ai_radar_deep_insight`;
 CREATE TABLE `ai_radar_deep_insight` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
   `article_id` bigint unsigned NOT NULL COMMENT '关联文章ID',
+  `analysis_batch_id` bigint unsigned NOT NULL COMMENT 'L3洞察所属分析批次ID',
   `technical_background` text NOT NULL COMMENT '技术背景',
   `core_problem` text NOT NULL COMMENT '核心问题',
   `technical_solution` text NOT NULL COMMENT '技术方案',
@@ -90,19 +94,26 @@ CREATE TABLE `ai_radar_deep_insight` (
   `analysis_status` varchar(32) NOT NULL DEFAULT 'success' COMMENT '分析状态',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_article_id` (`article_id`),
+  UNIQUE KEY `uk_insight_batch_article` (`analysis_batch_id`, `article_id`),
+  KEY `idx_deep_insight_article` (`article_id`),
+  KEY `idx_analysis_batch_id` (`analysis_batch_id`),
   KEY `idx_analysis_status` (`analysis_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='深度洞察结果表';
 
 -- ----------------------------
--- 导入批次表
+-- 分析批次表（沿用历史表名 ai_radar_import_batch）
 -- ----------------------------
 DROP TABLE IF EXISTS `ai_radar_import_batch`;
 CREATE TABLE `ai_radar_import_batch` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-  `batch_no` varchar(64) NOT NULL COMMENT '批次号',
+  `batch_no` varchar(64) NOT NULL COMMENT '分析批次号',
   `task_type` varchar(64) DEFAULT NULL COMMENT '任务类型',
   `source_scope` varchar(512) DEFAULT NULL COMMENT '数据源列表JSON',
+  `collection_batch_id` bigint unsigned DEFAULT NULL COMMENT '关联采集批次ID，可为空',
+  `collection_batch_no` varchar(64) DEFAULT NULL COMMENT '关联采集批次号，可为空',
+  `from_date` datetime DEFAULT NULL COMMENT '分析范围开始',
+  `to_date` datetime DEFAULT NULL COMMENT '分析范围结束',
+  `collection_period` varchar(16) DEFAULT NULL COMMENT '分析周期档位',
   `article_count` int NOT NULL DEFAULT '0' COMMENT '文章数量',
   `success_count` int NOT NULL DEFAULT '0' COMMENT '成功数量',
   `failed_count` int NOT NULL DEFAULT '0' COMMENT '失败数量',
@@ -112,7 +123,70 @@ CREATE TABLE `ai_radar_import_batch` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_batch_no` (`batch_no`),
   KEY `idx_import_status` (`import_status`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='导入批次表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='分析批次表';
+
+-- ----------------------------
+-- 采集批次表
+-- ----------------------------
+DROP TABLE IF EXISTS `ai_radar_collection_batch`;
+CREATE TABLE `ai_radar_collection_batch` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `batch_no` varchar(64) NOT NULL COMMENT '采集批次号',
+  `task_type` varchar(64) DEFAULT NULL COMMENT '任务类型',
+  `source_scope` varchar(512) DEFAULT NULL COMMENT '数据源列表JSON',
+  `from_date` datetime DEFAULT NULL COMMENT '采集范围开始',
+  `to_date` datetime DEFAULT NULL COMMENT '采集范围结束',
+  `strategy` varchar(32) DEFAULT NULL COMMENT '采集策略',
+  `collection_period` varchar(16) DEFAULT NULL COMMENT '采集周期档位',
+  `article_count` int NOT NULL DEFAULT '0' COMMENT '采集文章数',
+  `collection_status` varchar(32) NOT NULL DEFAULT 'success' COMMENT '采集状态',
+  `snapshot_path` varchar(1024) DEFAULT NULL COMMENT '采集快照路径',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_collection_batch_no` (`batch_no`),
+  KEY `idx_collection_status` (`collection_status`),
+  KEY `idx_collection_time_range` (`from_date`, `to_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='采集批次表';
+
+-- ----------------------------
+-- 采集批次文章关系表
+-- ----------------------------
+DROP TABLE IF EXISTS `ai_radar_collection_article`;
+CREATE TABLE `ai_radar_collection_article` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `collection_batch_id` bigint unsigned NOT NULL COMMENT '采集批次ID',
+  `article_id` bigint unsigned NOT NULL COMMENT '文章ID',
+  `source_code` varchar(64) DEFAULT NULL COMMENT '来源编码快照',
+  `publish_time` datetime DEFAULT NULL COMMENT '发布时间快照',
+  `relation_status` varchar(32) NOT NULL DEFAULT 'collected' COMMENT '关系状态',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_collection_article` (`collection_batch_id`, `article_id`),
+  KEY `idx_collection_article_article` (`article_id`),
+  KEY `idx_collection_article_publish_time` (`publish_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='采集批次文章关系表';
+
+-- ----------------------------
+-- 分析批次文章结果关系表
+-- ----------------------------
+DROP TABLE IF EXISTS `ai_radar_analysis_article`;
+CREATE TABLE `ai_radar_analysis_article` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `analysis_batch_id` bigint unsigned NOT NULL COMMENT '分析批次ID',
+  `collection_batch_id` bigint unsigned DEFAULT NULL COMMENT '来源采集批次ID',
+  `article_id` bigint unsigned NOT NULL COMMENT '文章ID',
+  `analysis_id` bigint unsigned DEFAULT NULL COMMENT 'L2分析结果ID',
+  `insight_id` bigint unsigned DEFAULT NULL COMMENT 'L3洞察结果ID',
+  `rank_score` decimal(4,2) DEFAULT NULL COMMENT '本批次综合评分',
+  `l3_selected` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否本批次L3入选',
+  `relation_status` varchar(32) NOT NULL DEFAULT 'success' COMMENT '关系状态',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_analysis_article` (`analysis_batch_id`, `article_id`),
+  KEY `idx_analysis_article_article` (`article_id`),
+  KEY `idx_analysis_article_collection` (`collection_batch_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='分析批次文章结果关系表';
 
 -- ----------------------------
 -- 采集分析运营过程表
@@ -154,12 +228,15 @@ CREATE TABLE `ai_radar_briefing_draft` (
   `time_range_end` datetime DEFAULT NULL COMMENT '覆盖时间结束',
   `related_article_ids` json DEFAULT NULL COMMENT '关联文章ID列表',
   `related_insight_ids` json DEFAULT NULL COMMENT '关联洞察ID列表',
+  `analysis_batch_id` bigint unsigned DEFAULT NULL COMMENT '生成简报使用的分析批次ID',
+  `analysis_batch_no` varchar(64) DEFAULT NULL COMMENT '生成简报使用的分析批次号',
   `review_status` varchar(32) NOT NULL DEFAULT 'pending' COMMENT '审核状态(pending/passed/rejected)',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
   KEY `idx_briefing_type` (`briefing_type`),
   KEY `idx_time_range` (`time_range_start`, `time_range_end`),
+  KEY `idx_briefing_analysis_batch` (`analysis_batch_id`),
   KEY `idx_review_status` (`review_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='简报草稿表';
 

@@ -79,8 +79,9 @@ class ValidationCollectRequest(CollectJobRequest):
 class ValidationAnalyzeRequest(BaseModel):
     """对正式采集或分析快照执行 L2/L3 并导入。"""
 
-    collection_batch_no: str = Field(
-        description="COL-* 采集快照，或 IMP-*/RERUN-* 分析快照批次号",
+    collection_batch_no: Optional[str] = Field(
+        default=None,
+        description="COL-* 采集快照，或 IMP-*/RERUN-* 分析快照批次号；不传则合并本地所有 COL 快照并按时间分析",
         min_length=1,
         max_length=128,
     )

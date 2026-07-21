@@ -38,7 +38,8 @@ from db.models import (
 
     get_session, Source, ImportBatch, Article, ArticleAnalysis,
 
-    DeepInsight, BriefingDraft, KbMapping, PipelineOperation
+    DeepInsight, BriefingDraft, KbMapping, PipelineOperation,
+    CollectionBatch, CollectionArticle, AnalysisArticle
 
 )
 
@@ -59,6 +60,15 @@ class BatchInfo(BaseModel):
     task_type: str = Field("scheduled", description="scheduled / manual_backfill")
 
     source_scope: Optional[List[str]] = Field(None, description="本次涉及数据源编码列表")
+    collection_batch_no: Optional[str] = Field(
+        None,
+        description="本次分析关联的 COL-* 采集批次号；采集阶段导入时可与 batch_no 相同",
+    )
+    from_date: Optional[str] = Field(None, description="批次覆盖开始日期")
+    to_date: Optional[str] = Field(None, description="批次覆盖结束日期")
+    strategy: Optional[str] = Field(None, description="采集策略")
+    collection_period: Optional[str] = Field(None, description="采集/分析周期档位")
+    snapshot_path: Optional[str] = Field(None, description="本地快照文件路径")
 
     replace_insights_for_analyses: bool = Field(
         False,
@@ -235,6 +245,15 @@ def _parse_iso(s: Optional[str]) -> Optional[datetime]:
     if not s:
 
         return None
+    try:
+        # 兼容 Z 后缀和时区，MySQL 中统一保存为 naive datetime。
+        text = str(s).strip().replace("Z", "+00:00")
+        if not text:
+            return None
+        dt = datetime.fromisoformat(text)
+        return dt.replace(tzinfo=None)
+    except (ValueError, TypeError):
+        return None
 
 
 def _truncate_utf8(value: Optional[str], max_bytes: int = 60000) -> Optional[str]:
@@ -251,25 +270,97 @@ def _truncate_utf8(value: Optional[str], max_bytes: int = 60000) -> Optional[str
     )
     return f"{truncated}{suffix}"
 
-    try:
 
-        # 兼容 Z 后缀和时区
+def _is_collection_only(body: ImportRequest) -> bool:
+    """A COL payload records collected articles without creating an analysis batch."""
+    batch_no = str(body.batch.batch_no or "")
+    return batch_no.startswith("COL-") and not body.analyses and not body.insights
 
-        s = s.replace("Z", "+00:00")
 
-        if "+" in s or "T" in s:
-
-            from datetime import timezone
-
-            dt = datetime.fromisoformat(s)
-
-            return dt.replace(tzinfo=None)  # MySQL 不存时区
-
-        return datetime.fromisoformat(s)
-
-    except (ValueError, TypeError):
-
+def _upsert_collection_batch(
+    session,
+    batch_no: Optional[str],
+    body: ImportRequest,
+    article_count: int,
+) -> Optional[CollectionBatch]:
+    """Create or update the collection batch metadata and return it."""
+    if not batch_no:
         return None
+    collection = session.query(CollectionBatch).filter(
+        CollectionBatch.batch_no == batch_no
+    ).first()
+    if collection is None:
+        collection = CollectionBatch(batch_no=batch_no)
+        session.add(collection)
+    collection.task_type = body.batch.task_type
+    collection.source_scope = json.dumps(body.batch.source_scope or [])
+    collection.from_date = _parse_iso(body.batch.from_date)
+    collection.to_date = _parse_iso(body.batch.to_date)
+    collection.strategy = body.batch.strategy
+    collection.collection_period = body.batch.collection_period
+    collection.article_count = max(int(collection.article_count or 0), article_count)
+    collection.collection_status = "success"
+    collection.snapshot_path = body.batch.snapshot_path
+    session.flush()
+    return collection
+
+
+def _link_collection_article(
+    session,
+    collection: Optional[CollectionBatch],
+    article_id: int,
+    source_code: Optional[str],
+    publish_time: Optional[datetime],
+) -> None:
+    """Keep the many-to-many collection/article relationship idempotent."""
+    if collection is None:
+        return
+    relation = session.query(CollectionArticle).filter(
+        CollectionArticle.collection_batch_id == collection.id,
+        CollectionArticle.article_id == article_id,
+    ).first()
+    if relation is None:
+        relation = CollectionArticle(
+            collection_batch_id=collection.id,
+            article_id=article_id,
+            source_code=source_code,
+            publish_time=publish_time,
+            relation_status="collected",
+        )
+        session.add(relation)
+    else:
+        relation.source_code = source_code
+        relation.publish_time = publish_time
+        relation.relation_status = "collected"
+
+
+def _upsert_analysis_article(
+    session,
+    batch_id: int,
+    collection_batch_id: Optional[int],
+    article_id: int,
+    analysis_id: Optional[int],
+    insight_id: Optional[int],
+    rank_score: Optional[float],
+    l3_selected: bool,
+) -> None:
+    """Keep the analysis batch/article relationship idempotent."""
+    relation = session.query(AnalysisArticle).filter(
+        AnalysisArticle.analysis_batch_id == batch_id,
+        AnalysisArticle.article_id == article_id,
+    ).first()
+    if relation is None:
+        relation = AnalysisArticle(
+            analysis_batch_id=batch_id,
+            collection_batch_id=collection_batch_id,
+            article_id=article_id,
+        )
+        session.add(relation)
+    relation.analysis_id = analysis_id
+    relation.insight_id = insight_id
+    relation.rank_score = rank_score
+    relation.l3_selected = 1 if l3_selected else 0
+    relation.relation_status = "success"
 
 @router.post("/api/v1/radar/import")
 
@@ -308,59 +399,69 @@ async def handle_import(request: Request, body: ImportRequest):
     session = get_session()
 
     try:
+        collection_only = _is_collection_only(body)
+        collection_batch_no = (
+            body.batch.collection_batch_no
+            or (body.batch.batch_no if str(body.batch.batch_no).startswith("COL-") else None)
+        )
+        collection_batch = None
+        batch = None
 
-        # 1. 幂等检查 — batch 级别
-
-        existing = session.query(ImportBatch).filter(
-
-            ImportBatch.batch_no == body.batch.batch_no
-
-        ).first()
-
-        if existing and existing.import_status == "success":
-
-            session.close()
-
-            return build_ok_response({
-
-                "batch_no": body.batch.batch_no,
-
-                "import_status": "success",
-
-                "note": "batch_already_exists",
-
-            })
-
-        # 2. 创建或更新批次记录
-
-        if existing:
-
-            batch = existing
-
-            batch.article_count = len(body.articles)
-
-            batch.source_scope = json.dumps(body.batch.source_scope or [])
-
+        if collection_only:
+            existing_collection = session.query(CollectionBatch).filter(
+                CollectionBatch.batch_no == body.batch.batch_no
+            ).first()
+            if existing_collection and existing_collection.collection_status == "success":
+                session.close()
+                return build_ok_response({
+                    "batch_no": body.batch.batch_no,
+                    "collection_status": "success",
+                    "note": "collection_batch_already_exists",
+                })
         else:
+            # 1. 幂等检查：分析批次级别。
+            existing = session.query(ImportBatch).filter(
+                ImportBatch.batch_no == body.batch.batch_no
+            ).first()
+            if existing and existing.import_status == "success":
+                session.close()
+                return build_ok_response({
+                    "batch_no": body.batch.batch_no,
+                    "import_status": "success",
+                    "note": "batch_already_exists",
+                })
 
-            batch = ImportBatch(
+        collection_batch = _upsert_collection_batch(
+            session,
+            collection_batch_no,
+            body,
+            len(body.articles),
+        )
+        collection_batch_id = collection_batch.id if collection_batch else None
 
-                batch_no=body.batch.batch_no,
-
-                task_type=body.batch.task_type,
-
-                source_scope=json.dumps(body.batch.source_scope or []),
-
-                article_count=len(body.articles),
-
-            )
-
-            session.add(batch)
-
-        session.flush()  # 获取 batch.id
+        # 2. 创建或更新分析批次记录；纯采集批次不进入该表。
+        if not collection_only:
+            if existing:
+                batch = existing
+                batch.article_count = len(body.articles)
+                batch.source_scope = json.dumps(body.batch.source_scope or [])
+            else:
+                batch = ImportBatch(
+                    batch_no=body.batch.batch_no,
+                    task_type=body.batch.task_type,
+                    source_scope=json.dumps(body.batch.source_scope or []),
+                    article_count=len(body.articles),
+                )
+                session.add(batch)
+            batch.collection_batch_id = collection_batch_id
+            batch.collection_batch_no = collection_batch_no
+            batch.from_date = _parse_iso(body.batch.from_date)
+            batch.to_date = _parse_iso(body.batch.to_date)
+            batch.collection_period = body.batch.collection_period
+            session.flush()  # 获取 batch.id
 
         # 2.1 写入阶段运营统计；可选字段保证旧版导入请求继续兼容。
-        if body.operation_metrics:
+        if body.operation_metrics and batch is not None:
             metrics = body.operation_metrics
             operation = session.query(PipelineOperation).filter(
                 PipelineOperation.batch_no == body.batch.batch_no
@@ -406,10 +507,9 @@ async def handle_import(request: Request, body: ImportRequest):
 
                 if existing_article:
 
-                    # 文章归属始终指向最近一次成功导入或重分析批次，
-                    # 保证批次查询与当前覆盖后的 L2/L3 结果一致。
-                    existing_article.import_batch_id = batch.id
                     incoming_publish_time = _parse_iso(item.publish_time)
+                    if batch is not None:
+                        existing_article.import_batch_id = batch.id
                     metadata_backfilled = []
                     if (
                         existing_article.publish_time is None
@@ -425,6 +525,13 @@ async def handle_import(request: Request, body: ImportRequest):
                         metadata_backfilled.append("author")
 
                     url_hash_to_article_id[item.url_hash] = existing_article.id
+                    _link_collection_article(
+                        session,
+                        collection_batch,
+                        existing_article.id,
+                        item.source_code,
+                        existing_article.publish_time or incoming_publish_time,
+                    )
 
                     imported_articles.append({
 
@@ -488,7 +595,7 @@ async def handle_import(request: Request, body: ImportRequest):
 
                         content_hash=item.content_hash,
 
-                        import_batch_id=batch.id,
+                        import_batch_id=batch.id if batch is not None else None,
 
                     )
 
@@ -497,6 +604,13 @@ async def handle_import(request: Request, body: ImportRequest):
                     session.flush()
 
                 url_hash_to_article_id[item.url_hash] = article.id
+                _link_collection_article(
+                    session,
+                    collection_batch,
+                    article.id,
+                    item.source_code,
+                    article.publish_time,
+                )
 
                 imported_articles.append({
 
@@ -522,7 +636,41 @@ async def handle_import(request: Request, body: ImportRequest):
 
                 })
 
+        if collection_only:
+            success_count = len(imported_articles)
+            failed_count = len(failed_items)
+            if collection_batch is not None:
+                collection_batch.article_count = success_count
+                collection_batch.collection_status = (
+                    "success" if failed_count == 0
+                    else "partial_success" if success_count > 0
+                    else "failed"
+                )
+            session.commit()
+            result = {
+                "batch_no": body.batch.batch_no,
+                "collection_status": (
+                    collection_batch.collection_status if collection_batch else "success"
+                ),
+                "article_count": len(body.articles),
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "imported_articles": imported_articles[:100],
+            }
+            if failed_items:
+                result["failed_items"] = failed_items[:20]
+            logger.info(
+                "采集批次导入完成: batch_no=%s, status=%s, success=%d, failed=%d",
+                body.batch.batch_no,
+                result["collection_status"],
+                success_count,
+                failed_count,
+            )
+            return build_ok_response(result)
+
         # 4. 写入 analyses
+        analysis_id_by_article_id = {}
+        rank_score_by_article_id = {}
 
         for item in body.analyses:
 
@@ -549,6 +697,7 @@ async def handle_import(request: Request, body: ImportRequest):
                 if item.title_cn and item.title_cn.strip():
                     analysis_detail["title_cn"] = item.title_cn.strip()
                 analysis_values = {
+                    "analysis_batch_id": batch.id,
                     "summary_cn": item.summary_cn,
                     "category": item.category,
                     "sub_category": item.sub_category,
@@ -570,7 +719,8 @@ async def handle_import(request: Request, body: ImportRequest):
                     "analysis_status": "success",
                 }
                 analysis = session.query(ArticleAnalysis).filter(
-                    ArticleAnalysis.article_id == article_id
+                    ArticleAnalysis.analysis_batch_id == batch.id,
+                    ArticleAnalysis.article_id == article_id,
                 ).first()
                 if analysis is None:
                     analysis = ArticleAnalysis(article_id=article_id, **analysis_values)
@@ -578,6 +728,9 @@ async def handle_import(request: Request, body: ImportRequest):
                 else:
                     for field, value in analysis_values.items():
                         setattr(analysis, field, value)
+                session.flush()
+                analysis_id_by_article_id[article_id] = analysis.id
+                rank_score_by_article_id[article_id] = rank_score
 
             except Exception as e:
 
@@ -593,32 +746,16 @@ async def handle_import(request: Request, body: ImportRequest):
 
                 })
 
-        # 重分析覆盖模式下，旧洞察不能继续参与后续简报选题。
+        # 批次化结果已经按 analysis_batch_id 隔离；旧洞察保留为历史记录，
+        # 简报查询只会读取目标分析批次，因此无需再批量 supersede。
         if body.batch.replace_insights_for_analyses:
-            replacement_hashes = (
-                body.batch.replace_insight_article_url_hashes
-                or [item.article_url_hash for item in body.analyses]
+            logger.info(
+                "已忽略旧版 replace_insights_for_analyses 标记: batch_no=%s",
+                body.batch.batch_no,
             )
-            analyzed_ids = {
-                url_hash_to_article_id[url_hash]
-                for url_hash in replacement_hashes
-                if url_hash in url_hash_to_article_id
-            }
-            refreshed_ids = {
-                url_hash_to_article_id[item.article_url_hash]
-                for item in body.insights
-                if item.article_url_hash in url_hash_to_article_id
-            }
-            stale_ids = analyzed_ids - refreshed_ids
-            if stale_ids:
-                session.query(DeepInsight).filter(
-                    DeepInsight.article_id.in_(stale_ids)
-                ).update(
-                    {DeepInsight.analysis_status: "superseded"},
-                    synchronize_session=False,
-                )
 
         # 5. 写入 insights
+        insight_id_by_article_id = {}
 
         for item in body.insights:
 
@@ -641,6 +778,7 @@ async def handle_import(request: Request, body: ImportRequest):
             try:
 
                 insight_values = {
+                    "analysis_batch_id": batch.id,
                     "technical_background": item.technical_background,
                     "core_problem": item.core_problem,
                     "technical_solution": item.technical_solution,
@@ -651,7 +789,8 @@ async def handle_import(request: Request, body: ImportRequest):
                     "analysis_status": "success",
                 }
                 insight = session.query(DeepInsight).filter(
-                    DeepInsight.article_id == article_id
+                    DeepInsight.analysis_batch_id == batch.id,
+                    DeepInsight.article_id == article_id,
                 ).first()
                 if insight is None:
                     insight = DeepInsight(article_id=article_id, **insight_values)
@@ -659,6 +798,8 @@ async def handle_import(request: Request, body: ImportRequest):
                 else:
                     for field, value in insight_values.items():
                         setattr(insight, field, value)
+                session.flush()
+                insight_id_by_article_id[article_id] = insight.id
 
             except Exception as e:
 
@@ -673,6 +814,18 @@ async def handle_import(request: Request, body: ImportRequest):
                     "detail": str(e),
 
                 })
+
+        for article_id, analysis_id in analysis_id_by_article_id.items():
+            _upsert_analysis_article(
+                session,
+                batch.id,
+                collection_batch_id,
+                article_id,
+                analysis_id,
+                insight_id_by_article_id.get(article_id),
+                rank_score_by_article_id.get(article_id),
+                article_id in insight_id_by_article_id,
+            )
 
         # 6. 计算导入统计
 
@@ -841,6 +994,8 @@ async def handle_import(request: Request, body: ImportRequest):
         result = {
 
             "batch_no": batch.batch_no,
+            "import_status": batch.import_status,
+            "collection_batch_no": collection_batch_no,
 
             "article_count": len(body.articles),
 

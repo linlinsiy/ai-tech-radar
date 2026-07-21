@@ -11,7 +11,8 @@ import httpx
 
 from config import InternalConfig
 from db.models import (
-    Article, ArticleAnalysis, BriefingDraft, DeepInsight, ImportBatch, Source, get_session,
+    AnalysisArticle, Article, ArticleAnalysis, BriefingDraft, DeepInsight,
+    ImportBatch, Source, get_session,
 )
 from jobs.briefing_render import (
     assemble_briefing as _assemble_briefing,
@@ -30,24 +31,27 @@ def _query_articles(
     session,
     start_date: datetime,
     end_date: datetime,
-    analysis_batch_id: Optional[int] = None,
+    analysis_batch_id: int,
 ) -> List[Dict]:
-    """Load successful L2/L3 articles, optionally bounded to one import batch."""
+    """Load successful L2/L3 articles from exactly one analysis batch."""
     from sqlalchemy import desc, func
 
     query = (
         session.query(Article, ArticleAnalysis, Source, DeepInsight)
-        .join(ArticleAnalysis, Article.id == ArticleAnalysis.article_id)
+        .join(AnalysisArticle, AnalysisArticle.article_id == Article.id)
+        .join(ArticleAnalysis, ArticleAnalysis.id == AnalysisArticle.analysis_id)
         .join(Source, Article.source_id == Source.id)
-        .join(DeepInsight, Article.id == DeepInsight.article_id)
+        .join(DeepInsight, DeepInsight.id == AnalysisArticle.insight_id)
         .filter(Article.publish_time >= start_date)
         .filter(Article.publish_time <= end_date)
+        .filter(AnalysisArticle.analysis_batch_id == analysis_batch_id)
+        .filter(ArticleAnalysis.analysis_batch_id == analysis_batch_id)
+        .filter(DeepInsight.analysis_batch_id == analysis_batch_id)
+        .filter(AnalysisArticle.l3_selected == 1)
         .filter(ArticleAnalysis.analysis_status == "success")
         .filter(DeepInsight.analysis_status == "success")
         .order_by(desc(func.coalesce(ArticleAnalysis.rank_score, ArticleAnalysis.value_score)))
     )
-    if analysis_batch_id is not None:
-        query = query.filter(Article.import_batch_id == analysis_batch_id)
     rows = query.all()
 
     result = []
@@ -339,7 +343,7 @@ def handle_briefing_job(params: str = "") -> Dict[str, Any]:
         "briefing_type=%s, time_range=%s, analysis_batch_no=%s",
         briefing_type,
         time_range,
-        analysis_batch_no or "all_successful_batches",
+        analysis_batch_no or "latest_successful_l3_batch",
     )
 
     session = get_session()
@@ -363,6 +367,23 @@ def handle_briefing_job(params: str = "") -> Dict[str, Any]:
                     "import_status": analysis_batch.import_status,
                 }
             analysis_batch_id = analysis_batch.id
+        else:
+            analysis_batch = (
+                session.query(ImportBatch)
+                .join(AnalysisArticle, AnalysisArticle.analysis_batch_id == ImportBatch.id)
+                .filter(ImportBatch.import_status == "success")
+                .filter(AnalysisArticle.l3_selected == 1)
+                .order_by(ImportBatch.id.desc())
+                .first()
+            )
+            if analysis_batch is None:
+                return {
+                    "status": "skipped",
+                    "reason": "no_successful_l3_analysis_batch",
+                    "time_range": time_range,
+                }
+            analysis_batch_id = analysis_batch.id
+            analysis_batch_no = analysis_batch.batch_no
 
         candidates = _query_articles(
             session,
@@ -443,6 +464,8 @@ def handle_briefing_job(params: str = "") -> Dict[str, Any]:
             time_range_end=end_date,
             related_article_ids=sorted(selected_article_ids),
             related_insight_ids=sorted(selected_insight_ids),
+            analysis_batch_id=analysis_batch_id,
+            analysis_batch_no=analysis_batch_no,
             review_status="pending",
         )
         session.add(draft)

@@ -65,6 +65,15 @@ class CollectOrchestrator:
         self.source_profiles = {
             source["code"]: source for source in config.get_data_sources()
         }
+
+        # 导入客户端不依赖 LLM；分阶段采集也需要用它落库采集批次。
+        retry_cfg = config.import_retry_config
+        self.importer = ImportClient(
+            endpoint_url=config.import_endpoint_url,
+            timeout=retry_cfg["timeout_seconds"],
+            retry_max=retry_cfg["retry_max"],
+            backoff_seconds=retry_cfg["backoff_seconds"],
+        )
         if not initialize_analysis:
             return
 
@@ -114,15 +123,6 @@ class CollectOrchestrator:
             config.l3_selection_config,
             min_score=config.deep_insight_min_score,
             source_profiles=self.source_profiles,
-        )
-
-        # 初始化导入客户端
-        retry_cfg = config.import_retry_config
-        self.importer = ImportClient(
-            endpoint_url=config.import_endpoint_url,
-            timeout=retry_cfg["timeout_seconds"],
-            retry_max=retry_cfg["retry_max"],
-            backoff_seconds=retry_cfg["backoff_seconds"],
         )
 
     def _get_api_key(self) -> str:
@@ -955,6 +955,50 @@ class CollectOrchestrator:
             rank_score = 0
         return category == "其他AI相关" and rank_score <= 5.0
 
+    def _article_import_item(self, article: RawArticle) -> Dict[str, Any]:
+        if not article.content_hash:
+            article.compute_content_hash(self._content_text(article) or article.url)
+        return {
+            "url": article.url,
+            "url_hash": article.url_hash,
+            "source_code": article.source_code,
+            "title": article.title,
+            "author": article.author,
+            "publish_time": article.publish_time.isoformat() if article.publish_time else None,
+            "crawl_time": article.crawl_time.isoformat(),
+            "raw_summary": article.raw_summary,
+            "full_content": self._content_text(article),
+            "content_hash": article.content_hash,
+        }
+
+    def import_collection_results(
+        self,
+        collection_batch_no: str,
+        task_type: str,
+        source_profiles: Dict[str, Dict[str, Any]],
+        articles: List[RawArticle],
+        from_date: str = None,
+        to_date: str = None,
+        strategy: str = None,
+        collection_period: str = None,
+        snapshot_path: str = None,
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        payload = self.importer.build_payload(
+            batch_no=collection_batch_no,
+            task_type=task_type,
+            source_scope=sorted(source_profiles),
+            articles=[self._article_import_item(article) for article in articles],
+            analyses=[],
+            insights=[],
+            collection_batch_no=collection_batch_no,
+            from_date=from_date,
+            to_date=to_date,
+            strategy=strategy,
+            collection_period=collection_period,
+            snapshot_path=snapshot_path,
+        )
+        return payload, self.importer.import_batch(payload)
+
     def run(
         self,
         scope: str = "all",
@@ -980,7 +1024,9 @@ class CollectOrchestrator:
         出参：执行统计 {batch_no, phase_stats: {...}, ...}
         """
         start_time = time.time()
-        batch_no = f"IMP-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        batch_suffix = datetime.now().strftime('%Y%m%d-%H%M%S')
+        batch_no = f"IMP-{batch_suffix}"
+        collection_batch_no = f"COL-{batch_suffix}"
         audit = CollectionAudit(self.config.data_dir, batch_no)
 
         logger.info("====== 采集分析任务开始 ======")
@@ -1010,6 +1056,7 @@ class CollectOrchestrator:
         batch_time = datetime.now()
         stats = {
             "batch_no": batch_no,
+            "collection_batch_no": collection_batch_no,
             "scope": scope,
             "L0_collect": {"total": 0, "sources": 0, "errors": 0},
             "L0_discovery": {"triggered": False, "site_total": 0, "search_total": 0, "total": 0},
@@ -1033,7 +1080,7 @@ class CollectOrchestrator:
             sources=sources,
             from_date=from_date,
             to_date=to_date,
-            hydrate_candidates=False,
+            hydrate_candidates=True,
             audit=audit,
             candidate_pool_config=processing_limits["candidate_pool"],
         )
@@ -1047,6 +1094,49 @@ class CollectOrchestrator:
         }
         logger.info("L1 候选发现完成: total_candidates=%d", len(all_candidates))
 
+        snapshot_store = CollectionSnapshotStore(self.config.data_dir)
+        collection_snapshot_path = snapshot_store.save(
+            batch_no=collection_batch_no,
+            request={
+                "scope": scope,
+                "sources": sources or [],
+                "from_date": from_date,
+                "to_date": to_date,
+                "task_type": task_type,
+                "strategy": strategy,
+                "collection_period": collection_period,
+                "resolved_collection_period": processing_limits["period"],
+            },
+            source_profiles=collection["source_profiles"],
+            articles=all_candidates,
+            update_latest=False,
+        )
+        collection_payload, collection_import = self.import_collection_results(
+            collection_batch_no=collection_batch_no,
+            task_type=task_type,
+            source_profiles=collection["source_profiles"],
+            articles=all_candidates,
+            from_date=from_date,
+            to_date=to_date,
+            strategy=strategy,
+            collection_period=processing_limits["period"],
+            snapshot_path=collection_snapshot_path,
+        )
+        stats["collection_snapshot"] = {
+            "path": collection_snapshot_path,
+            "article_count": len(all_candidates),
+        }
+        stats["collection_import"] = {
+            "status": "success" if collection_import.get("success") else "failed",
+        }
+        if not collection_import.get("success"):
+            stats["collection_import"]["error"] = collection_import.get("error", "unknown_error")
+            stats["collection_import"]["retry_files"] = self._persist_failed_import_payload(
+                collection_payload,
+                collection_import,
+                stats,
+            )
+
         analysis_run = self.analyze_stage(
             all_candidates,
             crawlers=source_crawlers,
@@ -1054,8 +1144,8 @@ class CollectOrchestrator:
             from_date=from_date,
             to_date=to_date,
             data_sources=data_sources,
-            use_history_cache=True,
-            persist_processed=True,
+            use_history_cache=self.config.analysis_cache_enabled,
+            persist_processed=False,
             enable_discovery=True,
             allow_l3_content_fetch=True,
             audit=audit,
@@ -1068,7 +1158,6 @@ class CollectOrchestrator:
         l3_candidates = analysis_run["l3_candidates"]
         l3_results = analysis_run["l3_results"]
 
-        snapshot_store = CollectionSnapshotStore(self.config.data_dir)
         replay_articles = [
             result["article"]
             for result in (l2_results + discarded_l2_results)
@@ -1206,6 +1295,18 @@ class CollectOrchestrator:
             articles=article_items,
             analyses=analysis_items,
             insights=insight_items,
+            collection_batch_no=collection_batch_no,
+            from_date=from_date,
+            to_date=to_date,
+            strategy=strategy,
+            collection_period=processing_limits["period"],
+            snapshot_path=snapshot_path,
+            # Kept for backward-compatible payloads; internal batch isolation
+            # now prevents stale L3 data by querying the exact analysis batch.
+            replace_insights_for_analyses=True,
+            replace_insight_article_url_hashes=[
+                result["article"].url_hash for result in l2_results
+            ],
             operation_metrics=operation_metrics,
         )
 
@@ -1220,6 +1321,10 @@ class CollectOrchestrator:
                 import_result,
                 stats,
             )
+        elif self.config.analysis_cache_enabled:
+            self.dedup.mark_processed_batch([
+                result["article"] for result in l2_results
+            ])
 
         l3_candidate_hashes = {result["article"].url_hash for result in l3_candidates}
         l3_success_hashes = {result["article"].url_hash for result in l3_results}
@@ -1275,25 +1380,15 @@ class CollectOrchestrator:
         l3_results: List[Dict[str, Any]],
         operation_metrics: Dict[str, Any],
         replace_existing_insights: bool = False,
+        collection_batch_no: str = None,
+        from_date: str = None,
+        to_date: str = None,
+        strategy: str = None,
+        collection_period: str = None,
+        snapshot_path: str = None,
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
         """Build and submit the shared internal import payload for any L2/L3 run."""
-        for result in l2_results:
-            article = result["article"]
-            if not article.content_hash:
-                article.compute_content_hash(self._content_text(article) or article.url)
-
-        article_items = [{
-            "url": result["article"].url,
-            "url_hash": result["article"].url_hash,
-            "source_code": result["article"].source_code,
-            "title": result["article"].title,
-            "author": result["article"].author,
-            "publish_time": result["article"].publish_time.isoformat() if result["article"].publish_time else None,
-            "crawl_time": result["article"].crawl_time.isoformat(),
-            "raw_summary": result["article"].raw_summary,
-            "full_content": self._content_text(result["article"]),
-            "content_hash": result["article"].content_hash,
-        } for result in l2_results]
+        article_items = [self._article_import_item(result["article"]) for result in l2_results]
         analysis_items = [{
             "article_url_hash": result["article"].url_hash,
             "source_language": result["analysis"].get("source_language", "unknown"),
@@ -1336,6 +1431,12 @@ class CollectOrchestrator:
             articles=article_items,
             analyses=analysis_items,
             insights=insight_items,
+            collection_batch_no=collection_batch_no,
+            from_date=from_date,
+            to_date=to_date,
+            strategy=strategy,
+            collection_period=collection_period,
+            snapshot_path=snapshot_path,
             replace_insights_for_analyses=reanalysis,
             replace_insight_article_url_hashes=(
                 [result["article"].url_hash for result in (l2_results + discarded_l2_results)]
@@ -1362,6 +1463,11 @@ class CollectOrchestrator:
         )
         snapshot_request = snapshot.get("request") or {}
         is_collection_snapshot = str(snapshot.get("batch_no") or "").startswith("COL-")
+        collection_batch_no = (
+            snapshot.get("batch_no")
+            if is_collection_snapshot
+            else snapshot_request.get("collection_batch_no")
+        )
         snapshot_articles = [
             CollectionSnapshotStore.article_from_dict(item)
             for item in snapshot.get("articles", [])
@@ -1408,7 +1514,7 @@ class CollectOrchestrator:
             # weekly and monthly analysis. Only batch-level de-duplication
             # applies; historical URL/content cache must not suppress L2 again.
             use_history_cache=False,
-            persist_processed=is_collection_snapshot,
+            persist_processed=False,
             enable_discovery=is_collection_snapshot,
             allow_l3_content_fetch=is_collection_snapshot,
             replay_snapshot=not is_collection_snapshot,
@@ -1488,6 +1594,11 @@ class CollectOrchestrator:
             articles=article_items,
             analyses=analysis_items,
             insights=insight_items,
+            collection_batch_no=collection_batch_no,
+            from_date=from_date,
+            to_date=to_date,
+            strategy=snapshot_request.get("strategy"),
+            collection_period=processing_limits["period"],
             # Every explicit snapshot replay replaces its prior L3 decision.
             # A COL snapshot may have been analyzed earlier with a different
             # prompt, so stale successful insights must not remain selectable.
@@ -1557,6 +1668,10 @@ class CollectOrchestrator:
                 retry_stats["import"]["error"],
             )
             return retry_stats
+        if self.config.analysis_cache_enabled:
+            self.dedup.mark_processed_batch([
+                result["article"] for result in l2_results
+            ])
         result = {
             "batch_no": batch_no,
             "scope": "rerun",
@@ -1578,7 +1693,7 @@ class CollectOrchestrator:
             batch_no=batch_no,
             request={
                 **snapshot_request,
-                "collection_batch_no": snapshot.get("batch_no"),
+                "collection_batch_no": collection_batch_no,
                 "from_date": from_date,
                 "to_date": to_date,
                 "task_type": task_type,

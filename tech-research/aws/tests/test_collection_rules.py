@@ -1083,7 +1083,7 @@ class CollectionRuleTests(unittest.TestCase):
             orchestrator.importer,
             "build_payload",
             return_value={},
-        ), patch.object(
+        ) as build_payload, patch.object(
             orchestrator.importer,
             "import_batch",
             return_value={"success": True},
@@ -1094,9 +1094,14 @@ class CollectionRuleTests(unittest.TestCase):
         self.assertEqual(
             collect_stage.call_args.kwargs["strategy"], PRIMARY_RESILIENT
         )
+        self.assertTrue(
+            build_payload.call_args.kwargs[
+                "replace_insights_for_analyses"
+            ]
+        )
         _, kwargs = analyze_stage.call_args
-        self.assertTrue(kwargs["use_history_cache"])
-        self.assertTrue(kwargs["persist_processed"])
+        self.assertFalse(kwargs["use_history_cache"])
+        self.assertFalse(kwargs["persist_processed"])
         self.assertTrue(kwargs["enable_discovery"])
         self.assertTrue(kwargs["allow_l3_content_fetch"])
 

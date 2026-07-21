@@ -83,7 +83,8 @@ class ImportModelTests(unittest.TestCase):
             briefing_job_source = source_file.read()
 
         self.assertIn("analysis_batch_no: Optional[str]", source)
-        self.assertIn("Article.import_batch_id == analysis_batch_id", briefing_job_source)
+        self.assertIn("AnalysisArticle.analysis_batch_id == analysis_batch_id", briefing_job_source)
+        self.assertIn("latest_successful_l3_batch", briefing_job_source)
 
 
 if __name__ == "__main__":

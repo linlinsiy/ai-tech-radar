@@ -34,13 +34,18 @@ class Source(Base):
 
 
 class ImportBatch(Base):
-    """导入批次 - ai_radar_import_batch"""
+    """分析批次 - ai_radar_import_batch（沿用旧表名）"""
     __tablename__ = "ai_radar_import_batch"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
     batch_no = Column(String(64), nullable=False, unique=True, comment="批次号")
     task_type = Column(String(64), comment="任务类型")
     source_scope = Column(String(512), comment="数据源列表 JSON")
+    collection_batch_id = Column(BigInteger, comment="关联采集批次 ID")
+    collection_batch_no = Column(String(64), comment="关联采集批次号")
+    from_date = Column(DateTime, comment="分析范围开始")
+    to_date = Column(DateTime, comment="分析范围结束")
+    collection_period = Column(String(16), comment="分析周期档位")
     article_count = Column(Integer, nullable=False, default=0, comment="文章数量")
     success_count = Column(Integer, nullable=False, default=0, comment="成功数量")
     failed_count = Column(Integer, nullable=False, default=0, comment="失败数量")
@@ -69,6 +74,64 @@ class PipelineOperation(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
 
 
+class CollectionBatch(Base):
+    """采集批次 - ai_radar_collection_batch"""
+    __tablename__ = "ai_radar_collection_batch"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    batch_no = Column(String(64), nullable=False, unique=True, comment="采集批次号")
+    task_type = Column(String(64), comment="任务类型")
+    source_scope = Column(String(512), comment="数据源列表 JSON")
+    from_date = Column(DateTime, comment="采集范围开始")
+    to_date = Column(DateTime, comment="采集范围结束")
+    strategy = Column(String(32), comment="采集策略")
+    collection_period = Column(String(16), comment="采集周期档位")
+    article_count = Column(Integer, nullable=False, default=0, comment="采集文章数")
+    collection_status = Column(String(32), nullable=False, default="success", comment="采集状态")
+    snapshot_path = Column(String(1024), comment="采集快照路径")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
+
+
+class CollectionArticle(Base):
+    """采集批次与文章关系 - ai_radar_collection_article"""
+    __tablename__ = "ai_radar_collection_article"
+    __table_args__ = (
+        UniqueConstraint("collection_batch_id", "article_id", name="uk_collection_article"),
+        Index("idx_collection_article_article", "article_id"),
+        Index("idx_collection_article_publish_time", "publish_time"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    collection_batch_id = Column(BigInteger, nullable=False, comment="采集批次 ID")
+    article_id = Column(BigInteger, nullable=False, comment="文章 ID")
+    source_code = Column(String(64), comment="来源编码")
+    publish_time = Column(DateTime, comment="发布时间快照")
+    relation_status = Column(String(32), nullable=False, default="collected", comment="关系状态")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+
+
+class AnalysisArticle(Base):
+    """分析批次与文章/结果关系 - ai_radar_analysis_article"""
+    __tablename__ = "ai_radar_analysis_article"
+    __table_args__ = (
+        UniqueConstraint("analysis_batch_id", "article_id", name="uk_analysis_article"),
+        Index("idx_analysis_article_article", "article_id"),
+        Index("idx_analysis_article_collection", "collection_batch_id"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    analysis_batch_id = Column(BigInteger, nullable=False, comment="分析批次 ID")
+    collection_batch_id = Column(BigInteger, comment="来源采集批次 ID")
+    article_id = Column(BigInteger, nullable=False, comment="文章 ID")
+    analysis_id = Column(BigInteger, comment="L2 分析结果 ID")
+    insight_id = Column(BigInteger, comment="L3 洞察结果 ID")
+    rank_score = Column(Numeric(4, 2), comment="本批次综合评分")
+    l3_selected = Column(Integer, nullable=False, default=0, comment="是否本批次 L3 入选")
+    relation_status = Column(String(32), nullable=False, default="success", comment="关系状态")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+
+
 class Article(Base):
     """外部文章 - ai_radar_article"""
     __tablename__ = "ai_radar_article"
@@ -84,15 +147,20 @@ class Article(Base):
     raw_summary = Column(LONGTEXT, comment="原文摘要")
     full_content = Column(LONGTEXT, comment="完整原文")
     content_hash = Column(String(64), comment="内容指纹")
-    import_batch_id = Column(BigInteger, nullable=False, comment="最近一次导入或重分析批次 ID")
+    import_batch_id = Column(BigInteger, nullable=True, comment="兼容字段：最近一次分析批次 ID")
 
 
 class ArticleAnalysis(Base):
     """文章分析结果 - ai_radar_article_analysis"""
     __tablename__ = "ai_radar_article_analysis"
+    __table_args__ = (
+        UniqueConstraint("analysis_batch_id", "article_id", name="uk_analysis_batch_article"),
+        Index("idx_article_analysis_article", "article_id"),
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
-    article_id = Column(BigInteger, nullable=False, unique=True, comment="文章 ID")
+    article_id = Column(BigInteger, nullable=False, comment="文章 ID")
+    analysis_batch_id = Column(BigInteger, nullable=False, index=True, comment="L2 分析所属分析批次 ID")
     summary_cn = Column(Text, nullable=False, comment="中文摘要")
     category = Column(String(128), comment="资讯一级分类")
     sub_category = Column(String(128), comment="资讯子分类")
@@ -117,9 +185,14 @@ class ArticleAnalysis(Base):
 class DeepInsight(Base):
     """深度洞察 - ai_radar_deep_insight"""
     __tablename__ = "ai_radar_deep_insight"
+    __table_args__ = (
+        UniqueConstraint("analysis_batch_id", "article_id", name="uk_insight_batch_article"),
+        Index("idx_deep_insight_article", "article_id"),
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
-    article_id = Column(BigInteger, nullable=False, unique=True, comment="文章 ID")
+    article_id = Column(BigInteger, nullable=False, comment="文章 ID")
+    analysis_batch_id = Column(BigInteger, nullable=False, index=True, comment="L3 洞察所属分析批次 ID")
     technical_background = Column(Text, nullable=False, comment="技术背景")
     core_problem = Column(Text, nullable=False, comment="核心问题")
     technical_solution = Column(Text, nullable=False, comment="技术方案")
@@ -142,6 +215,8 @@ class BriefingDraft(Base):
     time_range_end = Column(DateTime, comment="覆盖时间结束")
     related_article_ids = Column(JSON, comment="关联文章 ID")
     related_insight_ids = Column(JSON, comment="关联洞察 ID")
+    analysis_batch_id = Column(BigInteger, comment="生成简报使用的分析批次 ID")
+    analysis_batch_no = Column(String(64), comment="生成简报使用的分析批次号")
     review_status = Column(String(32), nullable=False, default="pending", comment="审核状态")
 
 
